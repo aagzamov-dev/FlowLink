@@ -18,7 +18,9 @@ cargo build --release -p flowlink
 
 Tests cover partial/corner/negative-coordinate edge geometry, overlap rejection, key mapping stability across app changes, terminal Ctrl+C, held-state cleanup, legal ownership transitions, invalid input, frame length bounds, PAKE wrong-code/identity/role rejection, global pairing throttling, pinned mutual TLS exchange, changed server identity, mouse click sequencing, device sorting/search, IPv6 address formatting, and manual address validation.
 
-A temporary Windows-only check harness under the ignored `.tools/` directory was used to type-check the real Windows platform module against windows-sys on `x86_64-pc-windows-gnu`. It is not a complete Windows engine build or executable test. CI/native Windows checks remain necessary.
+A temporary Windows-only check harness under the ignored `.tools/` directory was used to type-check the real Windows platform module against windows-sys on `x86_64-pc-windows-gnu`. Subsequently, the full Windows release executable, Rust tests, Clippy, and frontend checks passed on GitHub's native Windows runner in [run 39236134349](https://github.com/aagzamov-dev/FlowLink/actions/runs/39236134349). This confirms compilation and automated tests, not physical input behavior.
+
+The Check FlowLink workflow now builds an x64 NSIS setup executable on Windows after the checks pass, uploads it as `FlowLink-windows-x64-installer` for 30 days, and adds a download link to the Windows job summary. It runs on pushes, pull requests, and manual dispatch. Build success does not certify installation or keyboard/mouse sharing on a physical PC.
 
 Read-only probe: `cargo run -p flowlink-engine --example inspect`. It does not start an input tap, inject events, or write device credentials. Shell sandbox/headless sessions may return no displays even when the physical computer has a screen; record that limitation rather than inventing inventory.
 
@@ -61,7 +63,8 @@ Release requires recorded physical results and a pairing/security review. Never 
 | Mac display inventory | Packaged app reports the real 1512 × 982 logical built-in screen. Standalone shell probe has no active display inventory |
 | Physical Windows → Mac input workflow | Blocked: no Windows machine available; typing, filtering, and failover remain unverified |
 | Interface inspection | Devices, Displays, Settings, and manual-address dialog inspected in browser preview; no simulated device inventory |
-| CI and public release review | Configured/documented; not executed or approved |
+| Windows/macOS CI | Full release executable builds, tests, and lint passed in run 39236134349 |
+| Public release review | Not completed |
 
 These results do not certify keyboard/mouse injection, simultaneous input, OS-protected screens, network failover, or measured recovery/latency on physical machines.
 

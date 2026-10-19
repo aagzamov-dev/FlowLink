@@ -13,7 +13,7 @@
 
 ## Validation still required
 
-- Full engine/installer compilation on a native Windows toolchain. The Windows platform source has been separately cross-checked on Mac, not executed on Windows.
+- Installer installation and native execution on a physical Windows PC. Full release executable compilation, tests, and lint already passed on GitHub's Windows runner; CI now also builds and uploads an NSIS installer.
 - Actual PC with two monitors ↔ MacBook workflow over Wi-Fi and Ethernet.
 - English/Russian typing, layout switching, terminal behavior, pointer feel, mixed DPI, and high-polling-rate mice.
 - Active local-Mac filtering and simultaneous local/remote key ownership under real OS event delivery.

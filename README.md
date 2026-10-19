@@ -6,7 +6,7 @@ FlowLink is an open-source desktop app for sharing a Windows 11 computer's keybo
 
 Rust handles input, networking, authentication, and recovery. Tauri 2, React, and strict TypeScript provide the desktop interface. No account or cloud server is required.
 
-> **Development preview:** the macOS app builds and launches, and automated checks pass. The complete Windows app and physical Windows → Mac input workflow still need validation. There are no ready-to-install public releases yet.
+> **Development preview:** the macOS app builds and launches, and Windows/macOS automated build checks pass. Windows test installers are built by GitHub Actions. Physical Windows → Mac input sharing still needs validation; there is no stable release yet.
 
 ## Features
 
@@ -31,11 +31,24 @@ These features are implemented in the development source. Native input and two-c
 | macOS application | ARM64 development bundle builds and launches; real device name, addresses, and built-in display inventory checked |
 | Interface | Devices, Displays, Settings, and manual connection dialog inspected |
 | Automated checks | 21 Rust tests and 9 frontend tests passed; TypeScript, lint, formatting, Clippy, and frontend production build passed |
-| Windows platform code | Native hook/display module separately cross-type-checked; complete Windows app build and execution pending |
+| Windows application | Full release executable, tests, and lint passed on GitHub's Windows runner; physical execution and input testing pending |
 | Windows → Mac sharing | Physical pairing, typing, pointer behavior, filtering, reconnect, and recovery testing pending |
 | Public release | Security review, packaged-device testing, signing/notarization, and performance measurements pending |
 
 See [Testing](docs/TESTING.md) for recorded results and acceptance checks. Automated tests do not establish input reliability or latency on actual computers.
+
+## Download a Windows test installer
+
+For **Windows 11 on Intel/AMD x64**, you can download an installer without installing development tools:
+
+1. Sign in to GitHub and open [Check FlowLink in Actions](https://github.com/aagzamov-dev/FlowLink/actions/workflows/check.yml).
+2. Select the latest successful run on **main**.
+3. Under **Artifacts**, download **FlowLink-windows-x64-installer**. The Windows job summary also contains a download link.
+4. Extract the ZIP and run the `FlowLink_..._x64-setup.exe` inside.
+
+Installers are built on pushes and pull requests. To request another build, open the workflow and choose **Run workflow** on `main`. Downloads are retained for **30 days**; run the workflow again if an artifact expires.
+
+These are **unsigned development installers**. Windows may show an unknown-publisher or SmartScreen notice. They are intended for testing; keyboard/mouse behavior still needs verification on your own computers. The installer may require internet access to install WebView2 if it is missing.
 
 ## Build and run
 
@@ -77,7 +90,7 @@ npm run desktop:build -- --bundles nsis
 
 The installer is written to `target/release/bundle/nsis/`. The standalone executable is written to `target/release/flowlink.exe` with the default native target.
 
-The first complete Windows build remains a validation step. See [Tauri's Windows installer guide](https://v2.tauri.app/distribute/windows-installer/) for packaging details.
+GitHub Actions uses the same installer build with an explicit x64 target. See [Tauri's Windows installer guide](https://v2.tauri.app/distribute/windows-installer/) for packaging details.
 
 ### Create a macOS app
 
