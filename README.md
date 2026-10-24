@@ -1,159 +1,162 @@
 # FlowLink
 
-**One keyboard. One mouse. Your Windows PC and Mac.**
+**Share one keyboard and pointer between your Mac and Windows PC.**
 
-FlowLink is an open-source desktop app for sharing a Windows 11 or Mac computer's keyboard, mouse, and ordinary touchpad input with the other computer over a reachable local network or private VPN. Connect from the tray, arrange your screens, and move across a configured edge to switch computers.
+FlowLink connects two computers over the same network or a reachable private VPN address. Use your Mac to control Windows, or your Windows PC to control your Mac. Pair the computers, choose the main device, and switch using a screen edge, button, or keyboard shortcut. No account or cloud server is required.
 
-Rust handles input, networking, authentication, and recovery. Tauri 2, React, and strict TypeScript provide the desktop interface. No account or cloud server is required.
+![Diagram showing Mac and Windows connected in either direction over a local network or private VPN](docs/images/connection.svg)
 
-> **Development preview, version 0.2:** bidirectional control and recovery changes are implemented and covered by automated tests. Install matching 0.2 builds on both computers. This protocol is incompatible with 0.1; physical Windows ↔ Mac and Kerio VPN testing remains required.
+> **Development preview · version 0.2.0**
+>
+> Features below are implemented, with automated regression coverage. Real Mac ↔ Windows input, touchpad feel, and Kerio VPN reliability still need testing on physical devices. Use matching **0.2** builds on both computers; **0.1 is incompatible**. No new release has been published.
+
+[Features](#features) · [Setup](#connect-your-computers) · [Shortcuts](#keyboard-and-touchpad) · [Installers](#installers) · [Development](#development)
 
 ## Features
 
-- **Connect from either computer:** discover nearby FlowLink devices or enter a private IP/hostname, optionally with a port. No account, cloud server, or RDP session is needed.
-- **Choose the main device:** use Windows to control Mac or Mac to control Windows. Allow either computer to change the main device, or reserve changes for the current main device. Both computers can always release or pause input.
-- **Remembered connections:** paired identities, saved hostname/custom port, multiple address candidates, operating-system routing by default, optional interface selection, and automatic reconnect after network changes.
-- **Display arrangement:** preserve the main computer's native display group and position one selected controlled display beside it. Switch at shared edges or with the control button/hotkey.
-- **Editable shortcuts:** directional key-to-key or chord-to-chord rules, Ctrl ↔ Command editing presets, physical-key mode, and Mac terminal exceptions.
-- **Pointer and touchpad:** fractional pointer tracking, horizontal/vertical scrolling, small scroll-delta accumulation, Mac scroll phases/momentum deltas, pointer speed, and reverse scroll. OS-wide pinch/three-finger gestures are not forwarded.
-- **Recovery:** ownership tokens reject stale input; an independent watchdog releases held input after a stalled input lease. Short network stalls release input while retaining the connection for recovery.
-- **Local control:** local keyboard/trackpad permission on the controlled computer, persistent pause, emergency escape, tray controls, trust removal, and opt-in redacted diagnostics.
+| Feature                      | What you can do                                                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Mac ↔ Windows control**    | Share keyboard, mouse, and ordinary touchpad input in either direction.                                                                                              |
+| **Main-device selection**    | Choose which computer supplies input. Allow either device to change the main device, or restrict changes to the current main device. Both can still release control. |
+| **Nearby or IP connection**  | Discover nearby computers or enter a private IP/hostname, with an optional port.                                                                                     |
+| **Remembered pairing**       | Reconnect to a trusted computer without pairing again. Reconnection does not automatically take control.                                                             |
+| **Screen arrangement**       | Position one controlled screen beside the main computer’s display group and switch at a shared edge.                                                                 |
+| **Editable shortcuts**       | Create separate Mac → Windows and Windows → Mac rules, use Ctrl ↔ Command editing presets, or forward physical keys.                                                 |
+| **Pointer and scrolling**    | Adjust pointer speed and scroll direction; forward horizontal/vertical scrolling and small touchpad movements.                                                       |
+| **Pause and recovery**       | Pause sharing, return input locally, and release held input when a connection stalls. Pause survives app restarts.                                                   |
+| **Update controls**          | Check for updates, enable background checks, download a verified update, and choose when to install and restart.                                                     |
+| **Menu-bar / tray controls** | Connect, pause, release control, and open settings without keeping the main window open.                                                                             |
 
-## Current status
+## App preview
 
-The automated regression suite exercises two engine instances changing main device and handing off input in both directions, pause/recovery, stale input, shortcut mapping, fractional scrolling, and connection fallback. See [Testing](docs/TESTING.md) for current results and physical acceptance checks. Automated tests do not establish pointer feel, VPN reliability, or latency on actual computers.
+![FlowLink Settings interface showing update controls and general preferences](docs/images/settings.jpg)
 
-## Download a Windows test installer
+_Actual Settings screen from the browser interface preview. Device connection and update actions require the native desktop app._
 
-For **Windows 11 on Intel/AMD x64**, you can download an installer without installing development tools:
+## Connect your computers
 
-1. Sign in to GitHub and open [Check FlowLink in Actions](https://github.com/aagzamov-dev/FlowLink/actions/workflows/check.yml).
-2. Select the latest successful run on **main**.
-3. Under **Artifacts**, download **FlowLink-windows-x64-installer**. The Windows job summary also contains a download link.
-4. Extract the ZIP and run the `FlowLink_..._x64-setup.exe` inside.
+1. **Open matching FlowLink 0.2 builds on both computers.** On Mac, grant **Accessibility / Device Control** and **Input Monitoring**, allow Local Network access if prompted, then restart FlowLink.
+2. **Connect.** Select the other computer under **Nearby**, or click **Connect by IP** and enter the address shown on that computer.
+3. **Pair.** Approve the request on the receiving computer, then enter its six-digit code on the initiating computer. FlowLink remembers the pairing.
+4. **Choose the main device.** In **Devices → Main device**, select the computer whose keyboard and pointer you want to use. Choose whether either computer may change this selection.
+5. **Arrange your screens.** On the main device, open **Displays**, select the controlled screen, position it beside your display group, and save.
+6. **Start controlling.** Move across the configured edge or click **Control other computer**.
 
-Installers are built on pushes and pull requests. To request another build, open the workflow and choose **Run workflow** on `main`. Downloads are retained for **30 days**; run the workflow again if an artifact expires.
+**To return immediately:** press **Ctrl + Alt + Shift + Escape**. On Mac, Alt is **Option**. This pauses sharing locally. Settings also offers F12 instead of Escape.
 
-These are **unsigned development installers**. Windows may show an unknown-publisher or SmartScreen notice. They are intended for testing; keyboard/mouse behavior still needs verification on your own computers. The installer may require internet access to install WebView2 if it is missing.
+Closing the window keeps FlowLink running in the menu bar or tray. Choose **Quit** to exit.
 
-## Build and run
+### Same network or VPN
 
-Build separately on each computer and run the native desktop app on both. The browser preview does not provide input sharing.
+Start with **Automatic** network interface selection. For a VPN such as Kerio, enter the other computer’s reachable private IP if it does not appear under Nearby.
 
-### Requirements
+FlowLink uses **TCP port 47831** by default. Working RDP confirms that an RDP route is available; FlowLink’s own port must also be permitted by your firewall/VPN policy. FlowLink does not change these policies.
 
-- **Node.js 22.12+** and npm.
-- **Rust installed through rustup.** The repository pins its toolchain in [rust-toolchain.toml](rust-toolchain.toml).
-- [Tauri's native prerequisites](https://v2.tauri.app/start/prerequisites/):
-  - **Windows 11:** Microsoft C++ Build Tools with **Desktop development with C++** and a Windows SDK, Rust's MSVC toolchain, and Microsoft Edge WebView2 Runtime.
-  - **macOS 13+:** Xcode Command Line Tools. The current local bundle has been tested on Apple Silicon; Intel Mac builds have not been verified.
+After a network interruption, a trusted connection can reconnect automatically. Resume control explicitly once the connection is responsive. Clicking **Disconnect** stops automatic reconnect until you connect manually or restart the app.
 
-Restart your terminal after installing build tools.
+## Keyboard and touchpad
 
-### Get the source
+### Everyday shortcuts
+
+Enable **Adapt editing shortcuts** to translate supported Windows Ctrl editing combinations to Mac Command combinations, and the reverse. Mac terminal exceptions preserve Control; Ctrl+Alt/AltGr combinations are not treated as ordinary Ctrl editing shortcuts.
+
+For your own mappings, open **Settings → Custom shortcuts**:
+
+1. Choose **Mac → Windows** or **Windows → Mac**.
+2. Enter a source and target, such as `Cmd+Shift+C` → `Ctrl+Shift+C`.
+3. Add or update the rule, then click **Save changes**.
+
+Configure shortcuts on the computer supplying input. Each computer keeps its own preferences. Switch and emergency shortcuts are reserved.
+
+| Action                             | Default shortcut        |
+| ---------------------------------- | ----------------------- |
+| Switch / release control           | `Ctrl+Alt+Shift+Right`  |
+| Emergency pause and return locally | `Ctrl+Alt+Shift+Escape` |
+
+When receiving input, the switch shortcut releases control. When local on the other computer, it can make that computer main if the policy allows; starting remote control is a separate action. Release shortcut keys before handoff.
+
+The receiving computer’s keyboard layout determines typing. FlowLink does not synchronize language state. English/Russian layouts and IME workflows still need physical testing.
+
+### Touchpad support
+
+Pointer movement, clicks, horizontal/vertical scrolling, fractional deltas, and Mac scroll momentum deltas are supported. Pointer speed and reverse scrolling are configurable. Windows uses the pointer/wheel events exposed by the OS. **Pinch, rotate, and three-finger gestures are not forwarded.**
+
+## Installers
+
+| Platform                       | Current status                                                                                           |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| **macOS 13+ · Apple Silicon**  | Local 0.2.0 DMG built and verified. No public download published.                                        |
+| **Windows 11 · Intel/AMD x64** | NSIS installer configuration exists. Building and testing the current Windows installer remains pending. |
+| **Intel Mac**                  | Build configuration exists; not yet verified on hardware.                                                |
+
+### Install a Mac test build
+
+Quit any running FlowLink, open the DMG, and drag **FlowLink → Applications**. Open it from Applications, grant the permissions described above, then restart it.
+
+Local builds use ad-hoc signing and are not Apple-notarized. If macOS blocks your trusted test build, use **System Settings → Privacy & Security → Open Anyway** for that app.
+
+### Build installers locally
+
+After installing the [development prerequisites](#development), run on the corresponding OS:
+
+```sh
+# Mac: app and drag-to-Applications installer
+npm run desktop:build -- --bundles app,dmg
+
+# Windows: setup executable
+npm run desktop:build -- --bundles nsis
+```
+
+Outputs are under `target/release/bundle/`: `dmg/` and `macos/` on Mac, `nsis/` on Windows. Windows test builds may show an unknown-publisher notice and may need internet access to install WebView2.
+
+The [Check workflow](.github/workflows/check.yml) can produce Windows test artifacts. Always check the source revision and app version; an older successful workflow run may contain incompatible 0.1 code.
+
+### Updates and release preparation
+
+**Settings → App updates** includes **Check for updates**, optional automatic checks, download progress, release notes, and **Install & restart**. Automatic checks do not automatically download or install. Installing pauses sharing and releases input before restarting. Update both computers, then resume sharing.
+
+The update mechanism is configured, but no new update was published. Checks may report unavailable until a valid update feed exists.
+
+The manual [Prepare installers workflow](.github/workflows/prepare-release.yml) prepares Mac and Windows artifacts without publishing a release. Production signing credentials and device testing are still required. See [update and signing setup](docs/UPDATES.md).
+
+## Current limits
+
+- One connected peer at a time. All native displays on the main computer are supported, with one selected controlled display for edge switching.
+- No Linux, clipboard/file transfer, USB-specific networking, macros, or shortcut recording.
+- Login/FileVault screens, Windows UAC/secure desktops, protected input, media keys, and all keyboard/IME combinations are unsupported or unverified.
+- Automated tests cover ownership changes, recovery, shortcuts, fractional scrolling, and connection fallback. They do not prove real-device latency, pointer feel, or VPN reliability.
+
+See [testing and device checks](docs/TESTING.md) and the [roadmap](docs/ROADMAP.md).
+
+## Privacy and connection security
+
+Pairing uses a short-lived code with attempt limits. Trusted sessions use mutually authenticated TLS 1.3 with pinned device identities. Private identity material uses OS credential storage; secrets are excluded from frontend state and settings exports. Diagnostics are opt-in and redacted.
+
+There is no account, cloud relay, or analytics service. The pairing and input-control design still needs a focused security review before public release. See [security notes](docs/SECURITY.md) and the [protocol](docs/PROTOCOL.md).
+
+## Development
+
+Built with **Rust, Tauri 2, React 19, and TypeScript**.
+
+### Prerequisites
+
+- Node.js **22.12+** and npm.
+- Rust installed through rustup; use the pinned [toolchain](rust-toolchain.toml).
+- macOS: Xcode Command Line Tools.
+- Windows: Microsoft C++ Build Tools with **Desktop development with C++**, a Windows SDK, Rust’s MSVC toolchain, and Microsoft Edge WebView2 Runtime.
+
+See [Tauri’s native prerequisites](https://v2.tauri.app/start/prerequisites/) for platform setup. Restart your terminal after installing build tools.
 
 ```sh
 git clone https://github.com/aagzamov-dev/FlowLink.git
 cd FlowLink
 npm ci
-```
-
-### Run the desktop app
-
-```sh
 npm run desktop
 ```
 
-Closing a window keeps FlowLink running in the tray/menu bar. Use **Quit** to stop the app.
+For interface-only development, use `npm run dev` and open `http://127.0.0.1:1420`. The browser preview does not share input or connect real devices.
 
-### Create a Windows installer
-
-Run on Windows from the project folder:
-
-```powershell
-npm run desktop:build -- --bundles nsis
-```
-
-The installer is written to `target/release/bundle/nsis/`. The standalone executable is written to `target/release/flowlink.exe` with the default native target.
-
-GitHub Actions uses the same installer build with an explicit x64 target. See [Tauri's Windows installer guide](https://v2.tauri.app/distribute/windows-installer/) for packaging details.
-
-### Create a macOS app
-
-Run on Mac from the project folder:
-
-```sh
-npm run desktop:build -- --bundles app
-```
-
-The app is written to `target/release/bundle/macos/FlowLink.app`. Normal local builds use ad-hoc signing. Developer ID signing and notarization are configured in the manual installer-preparation workflow and require your Apple credentials.
-
-### App updates and release configuration
-
-Settings includes **Check for updates**, optional background checks, download progress, release notes, and **Install & restart**. Updates are verified before installation; sharing pauses and input is released before restarting. Install matching versions on both computers, then resume sharing.
-
-The manual **Prepare installers (no publishing)** workflow prepares Apple Silicon Mac, Intel Mac, and Windows x64 installers plus signed updater packages. It cannot create or publish releases. Signing credentials and physical update tests are still required before distribution. See [update setup and signing configuration](docs/UPDATES.md), including the local private signing key that must be backed up.
-
-### Preview the interface
-
-```sh
-npm run dev
-```
-
-The frontend runs at `http://127.0.0.1:1420`. It does not emulate devices, permissions, connections, or input. Native features require `npm run desktop`.
-
-## Connect your computers
-
-1. Open matching FlowLink 0.2 desktop builds on Windows and Mac.
-2. On Mac, grant **Accessibility / Device Control** and **Input Monitoring**, then restart FlowLink.
-3. On either computer, select the other under **Nearby**, or choose **Connect by IP** and enter the address displayed on the other computer. The default port is **TCP 47831**.
-4. Approve the request on the receiving computer and enter its six-digit code on the initiating computer. Pairing is remembered.
-5. In **Devices → Main device**, choose which computer supplies the keyboard/pointer. Leave **Either device can change the main device** enabled for switching from either side, or select main-only control.
-6. On the main device, open **Displays**, select the controlled screen, place it beside the main display group, and save. You can also use **Control other computer** without an edge arrangement.
-7. Move across a saved edge or press `Ctrl+Alt+Shift+Right`. Release the shortcut keys before handoff. On a receiving computer, the shortcut releases active control; when local, it makes that computer main if the policy permits. Starting control is a separate handoff.
-
-For a same-network or Kerio VPN setup, start with **Automatic** network interface and use the peer's reachable private IP. Discovery may not cross the VPN, so manual IP is the reliable setup path. RDP connectivity is useful evidence of routing, but FlowLink needs its own TCP port 47831 permitted by the existing firewall/VPN policy. FlowLink does not alter those policies.
-
-Trusted reconnect tries saved and discovered addresses and remembers a working route. It restores connectivity without automatically capturing input. A deliberate **Disconnect** suspends automatic reconnect until an explicit connection or app restart. Pause survives reconnect/restart.
-
-## Return control and pause
-
-- **Emergency pause:** `Ctrl+Alt+Shift+Escape`, handled locally. Settings can replace Escape with F12.
-- **Release:** use **Release control**, **Return here**, the switch shortcut, or a configured return edge. Releasing active input works even in main-only mode.
-- **Network interruption:** the native input lease targets local recovery within about one second. The connection has a separate five-second timeout, allowing a brief stall to recover without re-pairing. Resume control explicitly when the connection is responsive again.
-- **Local input:** enabled by default on both computers. Disabling it filters ordinary local input only while that computer receives remote control. Emergency escape remains available. This is a usability setting, not a security lock.
-
-## Keyboard and languages
-
-The receiving computer's selected keyboard layout/input source determines typing. English/Russian and IME workflows still need physical verification.
-
-**Adapt editing shortcuts** maps common Windows Ctrl editing combinations to Mac Command combinations and Mac Command editing combinations to Windows Ctrl. Mac terminal exceptions preserve Control. Ctrl+Alt/AltGr combinations are not matched as ordinary Ctrl editing shortcuts.
-
-Under **Settings → Custom shortcuts**, choose the direction and enter a source/target such as `Cmd+Shift+C` → `Ctrl+Shift+C` or `Ctrl+/` → `Cmd+/`. Rules match all held modifiers, override the preset, and stay attached through key-up even if settings change. Add or update the rule, then click **Save changes**. Configure preferences on the computer that will supply input; each device keeps its own settings. Switch/emergency shortcuts are reserved.
-
-For Windows → Mac, `Win+Space` can map to `Control+Space`; enable that input-source shortcut in macOS. FlowLink does not synchronize language state between computers.
-
-## Security and privacy
-
-- First-time pairing uses **SPAKE2** with a short-lived code and device-wide attempt limits.
-- Trusted sessions use **mutually authenticated TLS 1.3** with pinned device identities.
-- Private identity material uses the operating system's credential storage; secrets are excluded from frontend state and settings exports.
-- No account, hosted relay, cloud server, analytics, or clipboard-content sharing is included.
-- Device names are labels; authentication relies on the paired identity.
-
-The Rust SPAKE2 implementation [documents that it has not been independently audited](https://docs.rs/spake2/latest/spake2/). FlowLink's pairing and input-ownership design also needs a focused security review before public release. Read the [security notes](docs/SECURITY.md) and [protocol documentation](docs/PROTOCOL.md).
-
-## Limits and planned work
-
-Version 0.2 supports one active peer, either input direction, all native displays on the main computer, and one selected controlled display for edge switching.
-
-Not included: Linux, multiple simultaneous peers, clipboard/file transfer, native pinch/rotate/three-finger gestures, USB-specific networking, automatic updates, macros, or shortcut recording. Windows touchpad support uses the pointer/wheel events exposed by Windows rather than raw finger contacts. High-rate Windows pointer capture still uses the existing recentering hook path.
-
-Login/FileVault, UAC/secure desktops, protected input, all keyboard layouts, media keys, and IME composition are not supported or validated. Full Windows builds and physical pairing, scrolling, sleep/recovery, mixed DPI, and VPN performance must be checked with this revision before release.
-
-See the [Roadmap](docs/ROADMAP.md) for remaining validation work.
-
-## Development
+### Checks
 
 ```sh
 npm run typecheck
@@ -165,29 +168,23 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Read-only native inventory probe:
+`cargo run -p flowlink-engine --example inspect` reports native display/network inventory and permission readiness without installing input hooks or injecting events.
 
-```sh
-cargo run -p flowlink-engine --example inspect
-```
+The desktop launcher uses an ignored project-local Rust installation in `.tools/` when present. Do not copy `.tools/`, `node_modules/`, or `target/` between operating systems.
 
-It reports display/network inventory and permission readiness without installing input hooks, pairing, or injecting events. Shell/headless sessions may not expose the active desktop's displays.
-
-The desktop launcher uses an ignored project-local Rust installation in `.tools/` when present; otherwise it uses system Rust. Do not copy `.tools/`, `node_modules/`, or `target/` between operating systems.
-
-| Location | Purpose |
-| --- | --- |
-| `crates/flowlink-engine/` | Rust input, networking, pairing, topology, settings, and platform integrations |
-| `src-tauri/` | Native app, tray controls, commands, and packaging |
-| `src/` | React and TypeScript interface |
-| `docs/` | Architecture, protocol, security notes, testing, and roadmap |
+| Folder                    | Contents                                                         |
+| ------------------------- | ---------------------------------------------------------------- |
+| `crates/flowlink-engine/` | Input, connections, pairing, recovery, and platform integrations |
+| `src-tauri/`              | Native app, tray controls, updates, and packaging                |
+| `src/`                    | React and TypeScript interface                                   |
+| `docs/`                   | Architecture, protocol, testing, and release preparation         |
 
 [Architecture](docs/ARCHITECTURE.md) · [Protocol](docs/PROTOCOL.md) · [Security](docs/SECURITY.md) · [Testing](docs/TESTING.md) · [Roadmap](docs/ROADMAP.md)
 
 ## Contributing
 
-Issues, fixes, and test reports are welcome. Include your OS version, hardware, network connection, and clear reproduction steps. Remove pairing codes, private keys, and other sensitive information from reports. Keep physical-device observations separate from automated test results.
+Include your OS version, hardware, network setup, and reproduction steps with bug reports. Remove pairing codes, private keys, and other sensitive data. Distinguish physical-device observations from automated test results.
 
 ## License
 
-FlowLink is available under the [MIT License](LICENSE). You can use, modify, and redistribute the code under its terms.
+[MIT](LICENSE).

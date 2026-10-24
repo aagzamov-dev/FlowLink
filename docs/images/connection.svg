@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="300" viewBox="0 0 1000 300" role="img" aria-labelledby="title desc">
+<title id="title">Connect Mac and Windows with FlowLink</title>
+<desc id="desc">Mac and Windows connect in either direction over the same network or a reachable private VPN address. Choose a main device and share its keyboard and pointer.</desc>
+<rect width="1000" height="300" rx="20" fill="#15181f"/>
+<g font-family="Arial, sans-serif" text-anchor="middle">
+<text x="500" y="42" fill="#f1f3fa" font-size="22" font-weight="700">Two computers. One keyboard and pointer.</text>
+<g stroke="#879cff" stroke-width="3" fill="#222937">
+<rect x="82" y="83" width="210" height="124" rx="12"/>
+<path d="M187 207v20m-47 0h94"/>
+<rect x="708" y="83" width="210" height="124" rx="12"/>
+<path d="M813 207v20m-47 0h94"/>
+<path d="M326 148h348m-332-10-16 10 16 10m316-20 16 10-16 10" fill="none"/>
+</g>
+<text x="187" y="153" fill="#f1f3fa" font-size="26">Mac</text>
+<text x="813" y="153" fill="#f1f3fa" font-size="26">Windows</text>
+<text x="500" y="112" fill="#c1cbff" font-size="18">Same network or private VPN</text>
+<text x="500" y="184" fill="#aeb6c7" font-size="16">Find nearby · Connect by IP</text>
+<text x="500" y="265" fill="#aeb6c7" font-size="17">Choose the main device · Pair once · Switch with an edge, button or shortcut</text>
+</g></svg>
