@@ -26,10 +26,12 @@ import { Devices } from "./features/Devices";
 import { Displays } from "./features/Displays";
 import { Preferences } from "./features/Preferences";
 import { preview } from "./types";
+import { appVersion, useUpdates } from "./updates";
 const isDesktop = isTauri();
 const quick = new URLSearchParams(location.search).get("panel") === "quick";
 
 export default function App() {
+  const { update, runUpdate } = useUpdates();
   const [state, setState] = useState<Snapshot>(preview);
   const [page, setPage] = useState<Page>("devices");
   const [error, setError] = useState<string | null>(null);
@@ -137,9 +139,9 @@ export default function App() {
               {paused
                 ? "Sharing paused"
                 : remote
-                  ? "Controlling Mac"
+                  ? "Remote input active"
                   : state.connectedId
-                    ? "Connected · Windows has control"
+                    ? "Connected · local input"
                     : "Choose a computer below"}
             </small>
           </div>
@@ -152,11 +154,19 @@ export default function App() {
         <div className="quick-actions">
           <button
             className="primary"
-            disabled={!state.connectedId || state.peerPaused}
-            onClick={() => void run("pause", { paused: !paused })}
+            disabled={
+              !state.settings.paused && (!state.connectedId || state.peerPaused)
+            }
+            onClick={() =>
+              void run("pause", { paused: !state.settings.paused })
+            }
           >
             {paused ? <Play size={16} /> : <Pause size={16} />}
-            {state.peerPaused ? "Paused on peer" : paused ? "Resume" : "Pause"}
+            {state.settings.paused
+              ? "Resume here"
+              : state.peerPaused
+                ? "Paused on peer"
+                : "Pause"}
           </button>
           <button
             disabled={!state.connectedId}
@@ -179,7 +189,7 @@ export default function App() {
               <button
                 className="quick-device"
                 key={device.id}
-                disabled={!!state.connectedId || state.os !== "windows"}
+                disabled={!!state.connectedId}
                 onClick={() => connectDevice(device)}
               >
                 <span className="device-icon">
@@ -234,7 +244,7 @@ export default function App() {
           <ManualConnect
             run={run}
             close={() => setManual(false)}
-            canConnect={state.os === "windows"}
+            canConnect={!state.connectedId}
           />
         )}
         {state.pairing && (
@@ -263,6 +273,12 @@ export default function App() {
             >
               {item.icon}
               {item.label}
+              {item.id === "settings" &&
+                ["available", "ready"].includes(update.phase) && (
+                  <span className="update-badge" aria-label="Update available">
+                    Update
+                  </span>
+                )}
               {page === item.id && <span className="nav-dot" />}
             </button>
           ))}
@@ -271,12 +287,12 @@ export default function App() {
           <div className="privacy">
             <ShieldCheck size={16} />
             <span>
-              Private by design<small>Local network. No cloud.</small>
+              Private by design<small>Your input stays on your network.</small>
             </span>
           </div>
           <div className="version">
             <span className="mini-logo">F</span>FlowLink{" "}
-            <span>0.1 · Development</span>
+            <span>{appVersion}</span>
           </div>
         </div>
       </aside>
@@ -350,7 +366,14 @@ export default function App() {
             />
           )}
           {page === "displays" && <Displays state={state} run={run} />}
-          {page === "settings" && <Preferences state={state} run={run} />}
+          {page === "settings" && (
+            <Preferences
+              state={state}
+              run={run}
+              update={update}
+              runUpdate={runUpdate}
+            />
+          )}
         </div>
         <footer className="statusbar">
           <span>
@@ -360,10 +383,10 @@ export default function App() {
               : "Your input stays on this computer"}
           </span>
           <span>
-            {remote ? "Mac has control" : "Local control"}
+            {remote ? "Remote input active" : "Local control"}
             <span className="status-divider">·</span>
             {state.latencyMs === null
-              ? "LAN only"
+              ? "LAN / direct IP"
               : `${state.latencyMs.toFixed(1)} ms round trip`}
           </span>
         </footer>
@@ -372,7 +395,7 @@ export default function App() {
         <ManualConnect
           run={run}
           close={() => setManual(false)}
-          canConnect={state.os === "windows"}
+          canConnect={!state.connectedId}
         />
       )}
       {state.pairing && (

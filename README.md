@@ -2,40 +2,26 @@
 
 **One keyboard. One mouse. Your Windows PC and Mac.**
 
-FlowLink is an open-source desktop app for sharing a Windows 11 computer's keyboard and mouse with a Mac over your local Wi-Fi or Ethernet network. Connect from the tray, arrange your screens, and move across a configured edge to switch computers.
+FlowLink is an open-source desktop app for sharing a Windows 11 or Mac computer's keyboard, mouse, and ordinary touchpad input with the other computer over a reachable local network or private VPN. Connect from the tray, arrange your screens, and move across a configured edge to switch computers.
 
 Rust handles input, networking, authentication, and recovery. Tauri 2, React, and strict TypeScript provide the desktop interface. No account or cloud server is required.
 
-> **Development preview:** the macOS app builds and launches, and Windows/macOS automated build checks pass. Windows test installers are built by GitHub Actions. Physical Windows → Mac input sharing still needs validation; there is no stable release yet.
+> **Development preview, version 0.2:** bidirectional control and recovery changes are implemented and covered by automated tests. Install matching 0.2 builds on both computers. This protocol is incompatible with 0.1; physical Windows ↔ Mac and Kerio VPN testing remains required.
 
 ## Features
 
-These features are implemented in the development source. Native input and two-computer behavior still need the hardware testing described below.
-
-- **Quick tray controls:** connect, disconnect, pause, resume, and return control to Windows.
-- **LAN connections:** automatic FlowLink device discovery plus manual IP/hostname connection over Wi-Fi or Ethernet.
-- **Easy addressing:** live local addresses grouped by interface, with separate actions to copy an IP or an address with its port.
-- **Remembered devices:** trusted and nearby lists, search, favorites, availability, and one active Mac receiver at a time.
-- **Six-digit pairing:** approve on the Mac, enter its temporary code on Windows, then reconnect using trusted device identities.
-- **Display arrangement:** keep Windows monitors in their native arrangement and drag the Mac display beside them, with snapping, offsets, and partial shared edges.
-- **Keyboard preferences:** physical-key forwarding, Windows-familiar and Mac-native presets, common shortcut mappings, and terminal exceptions.
-- **Pointer preferences:** pointer speed, scroll direction, edge resistance, and hotkey-only switching.
-- **Local Mac input:** allow the Mac's keyboard/trackpad alongside remote input, or filter ordinary local input during remote control.
-- **Recovery controls:** local emergency shortcut, session watchdog, held-input cleanup, and persistent pause.
-- **Desktop settings:** system light/dark appearance, optional launch at login, device naming, trust removal, and opt-in redacted diagnostics.
+- **Connect from either computer:** discover nearby FlowLink devices or enter a private IP/hostname, optionally with a port. No account, cloud server, or RDP session is needed.
+- **Choose the main device:** use Windows to control Mac or Mac to control Windows. Allow either computer to change the main device, or reserve changes for the current main device. Both computers can always release or pause input.
+- **Remembered connections:** paired identities, saved hostname/custom port, multiple address candidates, operating-system routing by default, optional interface selection, and automatic reconnect after network changes.
+- **Display arrangement:** preserve the main computer's native display group and position one selected controlled display beside it. Switch at shared edges or with the control button/hotkey.
+- **Editable shortcuts:** directional key-to-key or chord-to-chord rules, Ctrl ↔ Command editing presets, physical-key mode, and Mac terminal exceptions.
+- **Pointer and touchpad:** fractional pointer tracking, horizontal/vertical scrolling, small scroll-delta accumulation, Mac scroll phases/momentum deltas, pointer speed, and reverse scroll. OS-wide pinch/three-finger gestures are not forwarded.
+- **Recovery:** ownership tokens reject stale input; an independent watchdog releases held input after a stalled input lease. Short network stalls release input while retaining the connection for recovery.
+- **Local control:** local keyboard/trackpad permission on the controlled computer, persistent pause, emergency escape, tray controls, trust removal, and opt-in redacted diagnostics.
 
 ## Current status
 
-| Area | Verified so far |
-| --- | --- |
-| macOS application | ARM64 development bundle builds and launches; real device name, addresses, and built-in display inventory checked |
-| Interface | Devices, Displays, Settings, and manual connection dialog inspected |
-| Automated checks | 21 Rust tests and 9 frontend tests passed; TypeScript, lint, formatting, Clippy, and frontend production build passed |
-| Windows application | Full release executable, tests, and lint passed on GitHub's Windows runner; physical execution and input testing pending |
-| Windows → Mac sharing | Physical pairing, typing, pointer behavior, filtering, reconnect, and recovery testing pending |
-| Public release | Security review, packaged-device testing, signing/notarization, and performance measurements pending |
-
-See [Testing](docs/TESTING.md) for recorded results and acceptance checks. Automated tests do not establish input reliability or latency on actual computers.
+The automated regression suite exercises two engine instances changing main device and handing off input in both directions, pause/recovery, stale input, shortcut mapping, fractional scrolling, and connection fallback. See [Testing](docs/TESTING.md) for current results and physical acceptance checks. Automated tests do not establish pointer feel, VPN reliability, or latency on actual computers.
 
 ## Download a Windows test installer
 
@@ -100,7 +86,13 @@ Run on Mac from the project folder:
 npm run desktop:build -- --bundles app
 ```
 
-The app is written to `target/release/bundle/macos/FlowLink.app`. The current configuration uses ad-hoc signing for local development; Developer ID signing and notarization are not configured.
+The app is written to `target/release/bundle/macos/FlowLink.app`. Normal local builds use ad-hoc signing. Developer ID signing and notarization are configured in the manual installer-preparation workflow and require your Apple credentials.
+
+### App updates and release configuration
+
+Settings includes **Check for updates**, optional background checks, download progress, release notes, and **Install & restart**. Updates are verified before installation; sharing pauses and input is released before restarting. Install matching versions on both computers, then resume sharing.
+
+The manual **Prepare installers (no publishing)** workflow prepares Apple Silicon Mac, Intel Mac, and Windows x64 installers plus signed updater packages. It cannot create or publish releases. Signing credentials and physical update tests are still required before distribution. See [update setup and signing configuration](docs/UPDATES.md), including the local private signing key that must be backed up.
 
 ### Preview the interface
 
@@ -112,32 +104,34 @@ The frontend runs at `http://127.0.0.1:1420`. It does not emulate devices, permi
 
 ## Connect your computers
 
-1. Open the native FlowLink app on Windows and Mac, on the same reachable LAN.
-2. On Mac, grant **Accessibility / Device Control** and **Input Monitoring** when prompted, then restart FlowLink. Permission names vary by macOS version.
-3. On Windows, select the Mac under **Nearby**, or use **Connect by IP** with an address shown on the Mac. The default listener port is **TCP 47831**.
-4. Approve pairing on the Mac. Enter its random six-digit code on Windows. Codes expire after two minutes; failed attempts are limited and require renewed approval.
-5. Open **Displays** on Windows, position the Mac beside the Windows screen group, and save. FlowLink does not change the operating system's display arrangement.
-6. Move across the configured shared edge. Alternatively, use **Control Mac** or `Ctrl+Alt+Shift+Right`; hotkey handoff waits for modifiers to be released.
+1. Open matching FlowLink 0.2 desktop builds on Windows and Mac.
+2. On Mac, grant **Accessibility / Device Control** and **Input Monitoring**, then restart FlowLink.
+3. On either computer, select the other under **Nearby**, or choose **Connect by IP** and enter the address displayed on the other computer. The default port is **TCP 47831**.
+4. Approve the request on the receiving computer and enter its six-digit code on the initiating computer. Pairing is remembered.
+5. In **Devices → Main device**, choose which computer supplies the keyboard/pointer. Leave **Either device can change the main device** enabled for switching from either side, or select main-only control.
+6. On the main device, open **Displays**, select the controlled screen, place it beside the main display group, and save. You can also use **Control other computer** without an edge arrangement.
+7. Move across a saved edge or press `Ctrl+Alt+Shift+Right`. Release the shortcut keys before handoff. On a receiving computer, the shortcut releases active control; when local, it makes that computer main if the policy permits. Starting control is a separate handoff.
 
-Trusted devices can reconnect automatically. Reconnection restores connectivity without immediately transferring input. Explicit pause survives reconnection and restart. Deliberate **Disconnect** suspends automatic reconnect until another explicit connection or app restart.
+For a same-network or Kerio VPN setup, start with **Automatic** network interface and use the peer's reachable private IP. Discovery may not cross the VPN, so manual IP is the reliable setup path. RDP connectivity is useful evidence of routing, but FlowLink needs its own TCP port 47831 permitted by the existing firewall/VPN policy. FlowLink does not alter those policies.
 
-Discovery lists FlowLink installations, rather than every device on your network. If discovery is blocked, use a manual address; routing and firewall rules must still permit the connection. FlowLink does not change firewall or VPN policies.
+Trusted reconnect tries saved and discovered addresses and remembers a working route. It restores connectivity without automatically capturing input. A deliberate **Disconnect** suspends automatic reconnect until an explicit connection or app restart. Pause survives reconnect/restart.
 
 ## Return control and pause
 
 - **Emergency pause:** `Ctrl+Alt+Shift+Escape`, handled locally. Settings can replace Escape with F12.
-- **Tray controls:** use **Return to Windows** or **Pause**.
-- **Connection loss:** the watchdog targets local recovery after one second without valid peer progress. Actual timing still needs hardware measurement.
-
-On Mac, **Allow local Mac keyboard and trackpad** is enabled by default. Disabling it filters ordinary local input only during active remote control, while keeping emergency escape available. If the filter or required permissions fail, remote control ends. This setting still needs physical-device verification and is not a security lock.
+- **Release:** use **Release control**, **Return here**, the switch shortcut, or a configured return edge. Releasing active input works even in main-only mode.
+- **Network interruption:** the native input lease targets local recovery within about one second. The connection has a separate five-second timeout, allowing a brief stall to recover without re-pairing. Resume control explicitly when the connection is responsive again.
+- **Local input:** enabled by default on both computers. Disabling it filters ordinary local input only while that computer receives remote control. Emergency escape remains available. This is a usability setting, not a security lock.
 
 ## Keyboard and languages
 
-The **Mac's selected input source** determines typing. Add US English and Russian input sources on Mac for the planned bilingual workflow; full typing validation is still pending.
+The receiving computer's selected keyboard layout/input source determines typing. English/Russian and IME workflows still need physical verification.
 
-**Windows-familiar** mode maps common Ctrl editing shortcuts to Command equivalents while preserving Control combinations in configured terminal applications. Terminal and iTerm2 are included by default. Integrated terminal panes may need an application exception or Mac-native mode.
+**Adapt editing shortcuts** maps common Windows Ctrl editing combinations to Mac Command combinations and Mac Command editing combinations to Windows Ctrl. Mac terminal exceptions preserve Control. Ctrl+Alt/AltGr combinations are not matched as ordinary Ctrl editing shortcuts.
 
-By default, Windows `Win+Space` requests Mac `Control+Space` input-source switching; the Windows trigger can be changed to `Ctrl+Space`. Enable the corresponding input-source shortcut in macOS. FlowLink does not automatically synchronize the two operating systems' language state.
+Under **Settings → Custom shortcuts**, choose the direction and enter a source/target such as `Cmd+Shift+C` → `Ctrl+Shift+C` or `Ctrl+/` → `Cmd+/`. Rules match all held modifiers, override the preset, and stay attached through key-up even if settings change. Add or update the rule, then click **Save changes**. Configure preferences on the computer that will supply input; each device keeps its own settings. Switch/emergency shortcuts are reserved.
+
+For Windows → Mac, `Win+Space` can map to `Control+Space`; enable that input-source shortcut in macOS. FlowLink does not synchronize language state between computers.
 
 ## Security and privacy
 
@@ -151,13 +145,13 @@ The Rust SPAKE2 implementation [documents that it has not been independently aud
 
 ## Limits and planned work
 
-The first version supports **Windows → Mac**, **one active Mac**, and **one Mac display**. Returning the Windows-controlled pointer from Mac to Windows is included.
+Version 0.2 supports one active peer, either input direction, all native displays on the main computer, and one selected controlled display for edge switching.
 
-Not included yet: Mac → Windows control, Linux, multiple simultaneous receivers, clipboard sharing, file transfer, trackpad gestures, USB-specific networking, automatic updates, and arbitrary shortcut recording.
+Not included: Linux, multiple simultaneous peers, clipboard/file transfer, native pinch/rotate/three-finger gestures, USB-specific networking, automatic updates, macros, or shortcut recording. Windows touchpad support uses the pointer/wheel events exposed by Windows rather than raw finger contacts. High-rate Windows pointer capture still uses the existing recentering hook path.
 
-Login/FileVault screens, Windows secure desktops/UAC prompts, protected input, all keyboard layouts, media keys, and IME composition are not supported or validated. Mixed DPI, high-rate mice, simultaneous local/remote input, sleep, permission changes, and adapter failover require further testing.
+Login/FileVault, UAC/secure desktops, protected input, all keyboard layouts, media keys, and IME composition are not supported or validated. Full Windows builds and physical pairing, scrolling, sleep/recovery, mixed DPI, and VPN performance must be checked with this revision before release.
 
-See the [Roadmap](docs/ROADMAP.md) for full implementation limits and release gates.
+See the [Roadmap](docs/ROADMAP.md) for remaining validation work.
 
 ## Development
 

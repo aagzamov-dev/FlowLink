@@ -38,6 +38,7 @@ export function Devices({
   const [query, setQuery] = useState("");
   const devices = sortedDevices(state.devices, query);
   const connected = state.devices.find((d) => d.id === state.connectedId);
+  const isMain = state.controllerId === state.deviceId;
   return (
     <>
       <div className="page-heading">
@@ -85,18 +86,20 @@ export function Devices({
           <p>
             {connected
               ? state.ownership === "remote"
-                ? "Your Windows keyboard and mouse are controlling the Mac."
-                : "Windows has control. Move across a configured screen edge to use your Mac."
-              : state.os === "macos"
-                ? "Open FlowLink on your Windows PC and select this Mac to get started."
-                : "Open FlowLink on your Mac, connect once, and make the whole desk feel connected."}
+                ? isMain
+                  ? "Your keyboard and pointer control the other computer."
+                  : "The other computer is controlling this device."
+                : isMain
+                  ? "This is the main device. Switch control using a screen edge or the button below."
+                  : "This device receives input. You can change the main device below."
+              : "Open FlowLink on both computers. Select a nearby device or enter its IP address."}
           </p>
           <div className="card-actions">
             {connected ? (
               <>
                 <button
                   className="primary"
-                  disabled={state.peerPaused}
+                  disabled={state.peerPaused && !state.settings.paused}
                   onClick={() =>
                     void run("pause", { paused: !state.settings.paused })
                   }
@@ -106,18 +109,22 @@ export function Devices({
                   ) : (
                     <Pause size={15} />
                   )}
-                  {state.peerPaused
-                    ? "Resume on other computer"
-                    : state.settings.paused
-                      ? "Resume sharing"
+                  {state.settings.paused
+                    ? "Resume here"
+                    : state.peerPaused
+                      ? "Paused on other computer"
                       : "Pause sharing"}
                 </button>
-                {state.os === "windows" && (
+                {(isMain ||
+                  state.controlFromEither ||
+                  state.ownership === "remote") && (
                   <button onClick={() => void run("switch_control")}>
                     <MousePointer2 size={15} />
                     {state.ownership === "remote"
-                      ? "Return to Windows"
-                      : "Control Mac"}
+                      ? "Release control"
+                      : isMain
+                        ? "Control other computer"
+                        : "Make this the main device"}
                   </button>
                 )}
                 <button
@@ -128,6 +135,13 @@ export function Devices({
                   Disconnect
                 </button>
               </>
+            ) : state.settings.paused ? (
+              <button
+                className="primary"
+                onClick={() => void run("pause", { paused: false })}
+              >
+                <Play size={15} /> Resume here
+              </button>
             ) : (
               <span className="inline-hint">
                 <Radio size={15} />
@@ -139,6 +153,57 @@ export function Devices({
           </div>
         </div>
       </section>
+      {connected && (
+        <section className="settings-section">
+          <h2>Main device</h2>
+          <div className="settings-body">
+            <label className="setting-row">
+              <span>
+                <strong>Keyboard and pointer source</strong>
+                <small>
+                  Changing the main device releases input first. Switch control
+                  when ready.
+                </small>
+              </span>
+              <select
+                aria-label="Main device"
+                disabled={!isMain && !state.controlFromEither}
+                value={state.controllerId ?? state.deviceId}
+                onChange={(e) =>
+                  void run("configure_control", {
+                    controllerId: e.target.value,
+                    fromEither: state.controlFromEither,
+                  })
+                }
+              >
+                <option value={state.deviceId}>
+                  {state.settings.deviceName} (this device)
+                </option>
+                <option value={connected.id}>{connected.name}</option>
+              </select>
+            </label>
+            <label className="setting-row">
+              <span>
+                <strong>Who can change the main device?</strong>
+              </span>
+              <select
+                aria-label="Control switching policy"
+                disabled={!isMain && !state.controlFromEither}
+                value={state.controlFromEither ? "either" : "main"}
+                onChange={(e) =>
+                  void run("configure_control", {
+                    controllerId: state.controllerId,
+                    fromEither: e.target.value === "either",
+                  })
+                }
+              >
+                <option value="either">Either computer</option>
+                <option value="main">Main device only</option>
+              </select>
+            </label>
+          </div>
+        </section>
+      )}
       <div className="section-heading">
         <h2>
           Computers <span className="count">{devices.length}</span>
@@ -209,12 +274,7 @@ export function Devices({
                     </button>
                   )}
                   <button
-                    disabled={
-                      working ||
-                      !!state.connectedId ||
-                      state.os !== "windows" ||
-                      device.busy
-                    }
+                    disabled={working || !!state.connectedId || device.busy}
                     onClick={() => connectDevice(device)}
                   >
                     {state.connectedId === device.id ? (
@@ -252,7 +312,7 @@ export function Devices({
               <>
                 Keep FlowLink open on both computers and use the same network.
                 <br />
-                Can’t find your Mac?{" "}
+                Can’t find the other computer?{" "}
                 <button className="text-button inline" onClick={manual}>
                   Connect by IP address
                 </button>

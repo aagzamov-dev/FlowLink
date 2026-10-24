@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod updates;
 use flowlink_engine::{
     model::{Placement, Settings, Snapshot},
     Engine,
@@ -29,8 +30,12 @@ fn disconnect(state: tauri::State<AppState>) {
     state.0.disconnect();
 }
 #[tauri::command]
-fn pause(state: tauri::State<AppState>, paused: bool) -> CommandResult<()> {
-    state.0.pause(paused).map_err(|e| e.to_string())
+fn pause(
+    state: tauri::State<AppState>,
+    updates: tauri::State<updates::Updates>,
+    paused: bool,
+) -> CommandResult<()> {
+    updates.change_controls(|| state.0.pause(paused).map_err(|e| e.to_string()))
 }
 #[tauri::command]
 fn return_local(state: tauri::State<AppState>) {
@@ -41,8 +46,23 @@ fn switch_control(state: tauri::State<AppState>) -> CommandResult<()> {
     state.0.switch_control().map_err(|e| e.to_string())
 }
 #[tauri::command]
-fn save_settings(state: tauri::State<AppState>, settings: Settings) -> CommandResult<()> {
-    state.0.save_settings(settings).map_err(|e| e.to_string())
+fn configure_control(
+    state: tauri::State<AppState>,
+    controller_id: String,
+    from_either: bool,
+) -> CommandResult<()> {
+    state
+        .0
+        .configure_control(controller_id, from_either)
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn save_settings(
+    state: tauri::State<AppState>,
+    updates: tauri::State<updates::Updates>,
+    settings: Settings,
+) -> CommandResult<()> {
+    updates.change_controls(|| state.0.save_settings(settings).map_err(|e| e.to_string()))
 }
 #[tauri::command]
 fn save_layout(state: tauri::State<AppState>, placements: Vec<Placement>) -> CommandResult<()> {
@@ -155,6 +175,12 @@ fn show_identifiers(app: &tauri::AppHandle, engine: &Engine) {
         )
         .build()
         {
+            if cfg!(target_os = "windows") {
+                let _ = w.set_position(tauri::PhysicalPosition::new(
+                    (display.rect.x + display.rect.width / 2.0 - 64.0 * display.scale) as i32,
+                    (display.rect.y + display.rect.height / 2.0 - 64.0 * display.scale) as i32,
+                ));
+            }
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 let _ = w.close();
@@ -164,6 +190,7 @@ fn show_identifiers(app: &tauri::AppHandle, engine: &Engine) {
 }
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             open_main(app.clone(), "devices".into())
         }))
@@ -177,6 +204,10 @@ fn main() {
             let engine = tauri::async_runtime::block_on(async { Engine::start(&directory) })
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             app.manage(AppState(engine.clone()));
+            app.manage(updates::Updates::new(
+                app.package_info().version.to_string(),
+            ));
+            updates::start_automatic_checks(app.handle().clone());
             if !std::env::args().any(|arg| arg == "--background") {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
@@ -185,9 +216,11 @@ fn main() {
             let open = MenuItem::with_id(app, "open", "Open FlowLink", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "Pause / Resume", true, None::<&str>)?;
             let release =
-                MenuItem::with_id(app, "release", "Return to Windows", true, None::<&str>)?;
+                MenuItem::with_id(app, "release", "Release remote control", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit FlowLink", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &pause, &release, &quit])?;
+            let check_updates =
+                MenuItem::with_id(app, "updates", "Check for updates…", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &pause, &release, &check_updates, &quit])?;
             let mut rgba = vec![0u8; 32 * 32 * 4];
             for y in 5..27 {
                 for x in 7..25 {
@@ -207,7 +240,16 @@ fn main() {
                     match event.id.as_ref() {
                         "open" => open_main(app.clone(), "devices".into()),
                         "pause" => {
-                            let _ = state.0.pause(!state.0.snapshot().settings.paused);
+                            let _ = app.state::<updates::Updates>().change_controls(|| {
+                                state
+                                    .0
+                                    .pause(!state.0.snapshot().settings.paused)
+                                    .map_err(|e| e.to_string())
+                            });
+                        }
+                        "updates" => {
+                            open_main(app.clone(), "settings".into());
+                            tauri::async_runtime::spawn(updates::check_for_updates(app.clone()));
                         }
                         "release" => state.0.return_local(),
                         "quit" => {
@@ -286,7 +328,7 @@ fn main() {
                         }
                         let label = match state.ownership {
                             flowlink_engine::model::Ownership::Remote => {
-                                "FlowLink · controlling Mac"
+                                "FlowLink · remote input active"
                             }
                             flowlink_engine::model::Ownership::Paused => "FlowLink · paused",
                             _ => "FlowLink · local control",
@@ -331,6 +373,7 @@ fn main() {
             pause,
             return_local,
             switch_control,
+            configure_control,
             save_settings,
             save_layout,
             answer_pairing,
@@ -342,7 +385,11 @@ fn main() {
             identify,
             open_main,
             autostart_enabled,
-            set_autostart
+            set_autostart,
+            updates::update_status,
+            updates::check_for_updates,
+            updates::download_update,
+            updates::install_update
         ])
         .build(tauri::generate_context!())
         .expect(

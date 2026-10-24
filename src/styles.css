@@ -1037,6 +1037,99 @@ kbd {
 .settings-section {
   margin-bottom: 25px;
 }
+.update-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 20px;
+}
+.update-symbol {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+.update-symbol.current {
+  color: var(--green);
+}
+.update-copy {
+  flex: 1;
+  min-width: 0;
+}
+.update-copy strong {
+  font-size: 13px;
+}
+.update-copy small {
+  margin-top: 5px;
+  font-size: 11px;
+}
+.update-error {
+  margin: 0 20px 16px;
+  color: #b9434d;
+  font-size: 12px;
+}
+.update-progress {
+  padding: 0 20px 20px;
+  display: grid;
+  gap: 8px;
+}
+.update-progress progress {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--blue);
+}
+.update-progress span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.update-notes {
+  padding: 0 20px 18px;
+  font-size: 12px;
+}
+.update-notes summary {
+  cursor: pointer;
+  color: var(--blue);
+}
+.update-notes p {
+  margin-top: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.update-badge {
+  margin-left: auto;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 9px;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 900px) {
+  .update-summary {
+    flex-wrap: wrap;
+  }
+  .update-summary > button {
+    margin-left: 60px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
 .settings-section > h2 {
   display: flex;
   gap: 9px;
@@ -1590,4 +1683,15 @@ kbd {
   display: flex;
   gap: 2px;
   align-items: center;
+}
+
+.shortcut-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+}
+.shortcut-editor input {
+  width: 155px;
 }

@@ -5,6 +5,14 @@ export interface Shortcut {
   scanCode: number;
   command: boolean;
 }
+export type Direction = "windowsToMac" | "macToWindows";
+export interface ShortcutBinding {
+  direction: Direction;
+  sourceKey: number;
+  sourceModifiers: number;
+  targetKey: number;
+  targetModifiers: number;
+}
 export interface Settings {
   schema: number;
   deviceName: string;
@@ -17,8 +25,10 @@ export interface Settings {
   hotkeyOnly: boolean;
   terminalApps: string[];
   shortcuts: Shortcut[];
+  bindings: ShortcutBinding[];
   interface: string | null;
   diagnostics: boolean;
+  autoCheckUpdates: boolean;
   emergencyKey: number;
   languageSwitch: "winSpace" | "ctrlSpace";
 }
@@ -91,6 +101,8 @@ export interface Snapshot {
   status: string;
   latencyMs: number | null;
   peerPaused: boolean;
+  controllerId: string | null;
+  controlFromEither: boolean;
 }
 export type Page = "devices" | "displays" | "settings";
 export const preview: Snapshot = {
@@ -108,8 +120,10 @@ export const preview: Snapshot = {
     hotkeyOnly: false,
     terminalApps: ["com.apple.Terminal", "com.googlecode.iterm2"],
     shortcuts: [],
+    bindings: [],
     interface: null,
     diagnostics: false,
+    autoCheckUpdates: true,
     emergencyKey: 1,
     languageSwitch: "winSpace",
   },
@@ -126,6 +140,8 @@ export const preview: Snapshot = {
   status: "Desktop app required",
   latencyMs: null,
   peerPaused: false,
+  controllerId: null,
+  controlFromEither: true,
 };
 
 export type Run = <T = void>(

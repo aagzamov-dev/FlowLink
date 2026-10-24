@@ -12,8 +12,7 @@ pub fn addresses() -> Vec<Address> {
         .filter(|a| {
             a.is_oper_up()
                 && !a.is_loopback()
-                && !a.is_p2p
-                && !["lo", "utun", "awdl", "llw"]
+                && !["lo", "awdl", "llw"]
                     .iter()
                     .any(|prefix| a.name.starts_with(prefix))
                 && is_lan(a.ip())
@@ -46,7 +45,11 @@ pub fn addresses() -> Vec<Address> {
 }
 pub fn is_lan(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_link_local()
+                || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
+        }
         IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
     }
 }
@@ -83,7 +86,7 @@ impl Discovery {
                 ("id".into(), id.into()),
                 ("name".into(), name.into()),
                 ("os".into(), os.into()),
-                ("version".into(), "1".into()),
+                ("version".into(), crate::model::PROTOCOL_VERSION.to_string()),
                 ("busy".into(), if busy { "1" } else { "0" }.into()),
             ]);
             let ips = local
@@ -173,5 +176,9 @@ mod tests {
         assert!(!is_lan("8.8.8.8".parse().unwrap()));
         assert!(is_lan("192.168.1.2".parse().unwrap()));
         assert!(!is_lan("127.0.0.1".parse().unwrap()));
+        assert!(is_lan("100.64.0.1".parse().unwrap()));
+        assert!(is_lan("10.10.0.2".parse().unwrap()));
+        assert!(is_lan("fd00::123".parse().unwrap()));
+        assert!(!is_lan("100.128.0.1".parse().unwrap()));
     }
 }

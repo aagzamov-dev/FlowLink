@@ -16,8 +16,18 @@ import type { Side } from "../layout";
 import { Empty } from "../components/common";
 
 export function Displays({ state, run }: { state: Snapshot; run: Run }) {
-  const host = state.displays.filter((d) => d.deviceId === state.deviceId);
-  const target = state.displays.find((d) => d.deviceId !== state.deviceId);
+  const mainId = state.controllerId ?? state.deviceId;
+  const mainName =
+    mainId === state.deviceId
+      ? state.settings.deviceName
+      : (state.devices.find((d) => d.id === mainId)?.name ?? "Main device");
+  const host = state.displays.filter((d) => d.deviceId === mainId);
+  const targets = state.displays.filter((d) => d.deviceId !== mainId);
+  const [targetId, setTargetId] = useState("");
+  const target =
+    targets.find((d) => d.id === targetId) ??
+    targets.find((d) => d.id === state.placements[0]?.displayId) ??
+    targets[0];
   const [draft, setDraft] = useState<Placement[]>(state.placements);
   const [dragging, setDragging] = useState<{ dx: number; dy: number } | null>(
     null,
@@ -45,7 +55,7 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
   const height = Math.max(...bounds.map((r) => r.y + r.height), 1100) - y + 250;
   const [view, setView] = useState<Rect | null>(null);
   const viewBox = view ?? { x, y, width, height };
-  const canEdit = state.os === "windows" && !!target;
+  const canEdit = mainId === state.deviceId && !!state.connectedId && !!target;
   const placements =
     target && virtualTarget
       ? [{ displayId: target.id, rect: virtualTarget }]
@@ -89,7 +99,10 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
         <div>
           <span className="eyebrow">A NATURAL EXTENSION OF YOUR DESK</span>
           <h1>Arrange your displays</h1>
-          <p>Place your Mac where it sits. Cross a shared edge to switch.</p>
+          <p>
+            Place the controlled screen where it sits. Cross a shared edge to
+            switch.
+          </p>
         </div>
         <button onClick={() => void run("identify")} disabled={!isTauri()}>
           <Monitor size={16} />
@@ -100,8 +113,8 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
         <div className="canvas-header">
           <span>
             <i className="legend-dot windows" />
-            Windows <i className="legend-dot mac" />
-            Mac
+            Main device <i className="legend-dot mac" />
+            Controlled screen
           </span>
           <button className="text-button" onClick={() => setView(null)}>
             Fit to view
@@ -159,8 +172,7 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
                   y={d.rect.y + d.rect.height / 2 + 110}
                   textAnchor="middle"
                 >
-                  {state.os === "macos" ? "Mac" : "Windows"} · {d.pixelWidth} ×{" "}
-                  {d.pixelHeight}
+                  {mainName} · {d.pixelWidth} × {d.pixelHeight}
                 </text>
               </g>
             ))}
@@ -169,7 +181,7 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
                 className={`draggable ${dragging ? "dragging" : ""}`}
                 tabIndex={canEdit ? 0 : -1}
                 role="slider"
-                aria-label="Mac display position. Drag or use arrow keys."
+                aria-label="Controlled display position. Drag or use arrow keys."
                 aria-valuetext={`${Math.round(virtualTarget.x)}, ${Math.round(virtualTarget.y)}`}
                 onPointerDown={start}
                 onPointerMove={move}
@@ -241,7 +253,7 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
                   y={virtualTarget.y + virtualTarget.height / 2 + 110}
                   textAnchor="middle"
                 >
-                  Mac · {target.pixelWidth} × {target.pixelHeight}
+                  Controlled · {target.pixelWidth} × {target.pixelHeight}
                 </text>
               </g>
             )}
@@ -264,10 +276,10 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
           <MousePointer2 size={15} />
           <span>
             {canEdit
-              ? "Drag the Mac display. Your Windows screen arrangement stays unchanged."
-              : state.os === "macos"
-                ? "Arrange the screens in FlowLink on Windows."
-                : "Connect a Mac to arrange its display."}
+              ? "Drag the controlled screen. The main device’s physical arrangement stays unchanged."
+              : state.connectedId
+                ? `Arrange screens on ${mainName}.`
+                : "Connect a device to arrange its display."}
           </span>
         </div>
       </section>
@@ -275,19 +287,36 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
         <section className="placement-controls">
           <div>
             <strong>Quick placement</strong>
-            <small>Place Mac next to</small>
+            <small>Place controlled screen next to</small>
           </div>
           <select
-            aria-label="Windows screen for placement"
+            aria-label="Main screen for placement"
             value={selected?.id ?? ""}
             onChange={(e) => setScreenId(e.target.value)}
           >
             {host.map((d) => (
               <option value={d.id} key={d.id}>
-                Windows display {d.number}
+                Main display {d.number}
               </option>
             ))}
           </select>
+          {targets.length > 1 && (
+            <select
+              aria-label="Controlled display"
+              value={target?.id ?? ""}
+              onChange={(e) => {
+                setTargetId(e.target.value);
+                setDraft([]);
+                setView(null);
+              }}
+            >
+              {targets.map((d) => (
+                <option key={d.id} value={d.id}>
+                  Controlled display {d.number}
+                </option>
+              ))}
+            </select>
+          )}
           <div className="direction-buttons">
             {(
               [
@@ -299,7 +328,7 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
             ).map((d) => (
               <button
                 key={d.side}
-                aria-label={`Place Mac ${d.side}`}
+                aria-label={`Place controlled screen ${d.side}`}
                 title={d.side}
                 onClick={() => beside(d.side)}
               >

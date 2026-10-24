@@ -1,32 +1,50 @@
 use super::Gate;
 use crate::{
-    input::{Input, NativeEvent},
+    input::{Input, NativeEvent, ScrollAccumulator, ShortcutMapper},
     model::{Display, Rect, Settings},
     Result,
 };
 use std::{
+    collections::HashSet,
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicI32, Ordering},
-        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
     },
 };
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    UI::{HiDpi::*, WindowsAndMessaging::*},
+    UI::{HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+const TAG: usize = 0x464c4f57;
 struct Context {
     gate: Arc<Gate>,
     held: [AtomicBool; 512],
+    local_keys: [AtomicBool; 512],
+    physical_buttons: [AtomicBool; 5],
+    local_buttons: [AtomicBool; 5],
+    remote_keys: [AtomicBool; 512],
+    remote_buttons: [AtomicBool; 5],
+    remote_x: AtomicU64,
+    remote_y: AtomicU64,
     x: AtomicI32,
     y: AtomicI32,
     anchor_x: AtomicI32,
     anchor_y: AtomicI32,
 }
 static CONTEXT: OnceLock<Arc<Context>> = OnceLock::new();
+#[derive(Default)]
+struct Injection {
+    bounds: Vec<Rect>,
+    keys: HashSet<u16>,
+    buttons: HashSet<u8>,
+    mapper: ShortcutMapper,
+    scroll: ScrollAccumulator,
+}
 pub struct Windows {
     context: Arc<Context>,
+    injection: Mutex<Injection>,
 }
 impl Windows {
     pub fn start(gate: Arc<Gate>) -> Result<Self> {
@@ -36,6 +54,13 @@ impl Windows {
         let context = Arc::new(Context {
             gate,
             held: std::array::from_fn(|_| AtomicBool::new(false)),
+            local_keys: std::array::from_fn(|_| AtomicBool::new(false)),
+            physical_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
+            local_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
+            remote_keys: std::array::from_fn(|_| AtomicBool::new(false)),
+            remote_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
+            remote_x: AtomicU64::new(0),
+            remote_y: AtomicU64::new(0),
             x: AtomicI32::new(0),
             y: AtomicI32::new(0),
             anchor_x: AtomicI32::new(0),
@@ -75,7 +100,10 @@ impl Windows {
                 UnhookWindowsHookEx(keyboard);
                 UnhookWindowsHookEx(mouse);
             })?;
-        Ok(Self { context })
+        Ok(Self {
+            context,
+            injection: Mutex::new(Injection::default()),
+        })
     }
     pub fn cursor(&self) -> (f64, f64) {
         unsafe {
@@ -84,7 +112,23 @@ impl Windows {
             (p.x as f64, p.y as f64)
         }
     }
+    pub fn has_local_input(&self) -> bool {
+        self.context
+            .held
+            .iter()
+            .chain(self.context.physical_buttons.iter())
+            .any(|key| key.load(Ordering::SeqCst))
+    }
     pub fn warp(&self, x: f64, y: f64) {
+        if let Ok(mut state) = self.injection.lock() {
+            state.bounds = displays("")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.rect)
+                .collect();
+        }
+        self.context.remote_x.store(x.to_bits(), Ordering::SeqCst);
+        self.context.remote_y.store(y.to_bits(), Ordering::SeqCst);
         self.context.x.store(x as i32, Ordering::SeqCst);
         self.context.y.store(y as i32, Ordering::SeqCst);
         self.context.anchor_x.store(x as i32, Ordering::SeqCst);
@@ -114,10 +158,160 @@ impl Windows {
                 == "Default"
         }
     }
-    pub fn release(&self) {}
-    pub fn inject(&self, _: &Input, _: &Settings) -> Result<()> {
-        Err("Windows receiving mode is not implemented".into())
+    pub fn release(&self) {
+        if let Ok(mut state) = self.injection.lock() {
+            for scan in state.keys.drain() {
+                self.context.remote_keys[scan as usize].store(false, Ordering::SeqCst);
+                if !self.context.local_keys[scan as usize].load(Ordering::SeqCst) {
+                    let _ = send_key(scan, false);
+                }
+            }
+            for button in state.buttons.drain() {
+                self.context.remote_buttons[button as usize].store(false, Ordering::SeqCst);
+                if !self.context.local_buttons[button as usize].load(Ordering::SeqCst) {
+                    let _ = send_button(button, false);
+                }
+            }
+            state.mapper.clear();
+            state.scroll = ScrollAccumulator::default();
+        }
     }
+    pub fn inject(&self, event: &Input, settings: &Settings) -> Result<()> {
+        let mut state = self.injection.lock().map_err(|_| "Input unavailable")?;
+        match event {
+            Input::Motion { dx, dy } => unsafe {
+                let left = GetSystemMetrics(SM_XVIRTUALSCREEN) as f64;
+                let top = GetSystemMetrics(SM_YVIRTUALSCREEN) as f64;
+                let width = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2) as f64;
+                let height = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2) as f64;
+                let x = (f64::from_bits(self.context.remote_x.load(Ordering::SeqCst))
+                    + dx * settings.pointer_speed)
+                    .clamp(left, left + width - 1.0);
+                let y = (f64::from_bits(self.context.remote_y.load(Ordering::SeqCst))
+                    + dy * settings.pointer_speed)
+                    .clamp(top, top + height - 1.0);
+                let (x, y) = crate::geometry::clamp_point(x, y, &state.bounds);
+                self.context.remote_x.store(x.to_bits(), Ordering::SeqCst);
+                self.context.remote_y.store(y.to_bits(), Ordering::SeqCst);
+                send_mouse(
+                    ((x - left) * 65535.0 / (width - 1.0)).round() as i32,
+                    ((y - top) * 65535.0 / (height - 1.0)).round() as i32,
+                    0,
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                )?;
+            },
+            Input::Scroll { x, y, .. } => {
+                let factor = if settings.reverse_scroll { -3.0 } else { 3.0 };
+                let (x, y) = state.scroll.take(x * factor, y * factor);
+                if x != 0 {
+                    send_mouse(0, 0, x as u32, MOUSEEVENTF_HWHEEL)?;
+                }
+                if y != 0 {
+                    send_mouse(0, 0, y as u32, MOUSEEVENTF_WHEEL)?;
+                }
+            }
+            Input::Button { button, down } => {
+                if *down {
+                    for scan in state.mapper.pointer_modifiers() {
+                        state.keys.insert(scan);
+                        self.context.remote_keys[scan as usize].store(true, Ordering::SeqCst);
+                        send_key(scan, true)?;
+                    }
+                }
+                self.context.remote_buttons[*button as usize].store(*down, Ordering::SeqCst);
+                if *down {
+                    state.buttons.insert(*button);
+                } else {
+                    state.buttons.remove(button);
+                }
+                if *down || !self.context.local_buttons[*button as usize].load(Ordering::SeqCst) {
+                    send_button(*button, *down)?;
+                }
+            }
+            Input::Key { scan, down } => {
+                for key in state.mapper.map(
+                    *scan,
+                    *down,
+                    settings,
+                    crate::model::Direction::MacToWindows,
+                    false,
+                ) {
+                    let Input::Key { scan, down } = key else {
+                        continue;
+                    };
+                    self.context.remote_keys[scan as usize].store(down, Ordering::SeqCst);
+                    if down {
+                        state.keys.insert(scan);
+                    } else {
+                        state.keys.remove(&scan);
+                    }
+                    if down || !self.context.local_keys[scan as usize].load(Ordering::SeqCst) {
+                        send_key(scan, down)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+fn send(input: INPUT) -> Result<()> {
+    if unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) } != 1 {
+        return Err("Windows rejected input. Protected or elevated windows cannot be controlled at this permission level".into());
+    }
+    Ok(())
+}
+fn send_key(scan: u16, down: bool) -> Result<()> {
+    send(INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: 0,
+                wScan: scan & 0xff,
+                dwFlags: KEYEVENTF_SCANCODE
+                    | if scan & 0x100 != 0 {
+                        KEYEVENTF_EXTENDEDKEY
+                    } else {
+                        0
+                    }
+                    | if down { 0 } else { KEYEVENTF_KEYUP },
+                time: 0,
+                dwExtraInfo: TAG,
+            },
+        },
+    })
+}
+fn send_mouse(dx: i32, dy: i32, data: u32, flags: u32) -> Result<()> {
+    send(INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                mouseData: data,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: TAG,
+            },
+        },
+    })
+}
+fn send_button(button: u8, down: bool) -> Result<()> {
+    let flag = match (button, down) {
+        (0, true) => MOUSEEVENTF_LEFTDOWN,
+        (0, false) => MOUSEEVENTF_LEFTUP,
+        (1, true) => MOUSEEVENTF_RIGHTDOWN,
+        (1, false) => MOUSEEVENTF_RIGHTUP,
+        (2, true) => MOUSEEVENTF_MIDDLEDOWN,
+        (2, false) => MOUSEEVENTF_MIDDLEUP,
+        (_, true) => MOUSEEVENTF_XDOWN,
+        (_, false) => MOUSEEVENTF_XUP,
+    };
+    send_mouse(
+        0,
+        0,
+        if button >= 3 { (button - 2) as u32 } else { 0 },
+        flag,
+    )
 }
 unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     if code < 0 {
@@ -127,7 +321,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRES
         return CallNextHookEx(ptr::null_mut(), code, w, l);
     };
     let k = &*(l as *const KBDLLHOOKSTRUCT);
-    if k.flags & LLKHF_INJECTED != 0 {
+    if k.dwExtraInfo == TAG {
         return CallNextHookEx(ptr::null_mut(), code, w, l);
     }
     let scan = (k.scanCode as u16)
@@ -160,8 +354,22 @@ unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRES
         ctx.gate.push(NativeEvent::Switch);
         return 1;
     }
-    ctx.gate.push(NativeEvent::Input(Input::Key { scan, down }));
-    if ctx.gate.active() {
+    let generation = ctx.gate.generation.load(Ordering::SeqCst);
+    let captured = ctx.gate.capturing();
+    let blocked = captured || (ctx.gate.active() && ctx.gate.block_local.load(Ordering::SeqCst));
+    if scan < 512 && (!blocked || !down) {
+        ctx.local_keys[scan as usize].store(down, Ordering::SeqCst);
+    }
+    ctx.gate.push(NativeEvent::Input {
+        generation,
+        event: Input::Key { scan, down },
+        captured,
+    });
+    if captured
+        || (ctx.gate.active()
+            && (ctx.gate.block_local.load(Ordering::SeqCst)
+                || (!down && scan < 512 && ctx.remote_keys[scan as usize].load(Ordering::SeqCst))))
+    {
         1
     } else {
         CallNextHookEx(ptr::null_mut(), code, w, l)
@@ -175,10 +383,16 @@ unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT
         return CallNextHookEx(ptr::null_mut(), code, w, l);
     };
     let m = &*(l as *const MSLLHOOKSTRUCT);
-    if m.flags & LLMHF_INJECTED != 0 {
+    if m.dwExtraInfo == TAG {
+        if w as u32 == WM_MOUSEMOVE && ctx.gate.active() && !ctx.gate.capturing() {
+            ctx.gate
+                .push(NativeEvent::Position(m.pt.x as f64, m.pt.y as f64));
+        }
         return CallNextHookEx(ptr::null_mut(), code, w, l);
     }
-    let remote = ctx.gate.active();
+    let generation = ctx.gate.generation.load(Ordering::SeqCst);
+    let remote = ctx.gate.capturing();
+    let blocked = remote || (ctx.gate.active() && ctx.gate.block_local.load(Ordering::SeqCst));
     let message = w as u32;
     if message == WM_MOUSEMOVE {
         let px = ctx.x.swap(m.pt.x, Ordering::SeqCst);
@@ -187,19 +401,31 @@ unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT
             let ax = ctx.anchor_x.load(Ordering::SeqCst);
             let ay = ctx.anchor_y.load(Ordering::SeqCst);
             if m.pt.x != ax || m.pt.y != ay {
-                ctx.gate.push(NativeEvent::Input(Input::Motion {
-                    dx: (m.pt.x - px) as f64,
-                    dy: (m.pt.y - py) as f64,
-                }));
+                ctx.gate.push(NativeEvent::Input {
+                    generation,
+                    captured: true,
+                    event: Input::Motion {
+                        dx: (m.pt.x - px) as f64,
+                        dy: (m.pt.y - py) as f64,
+                    },
+                });
                 ctx.x.store(ax, Ordering::SeqCst);
                 ctx.y.store(ay, Ordering::SeqCst);
                 SetCursorPos(ax, ay);
             }
         } else {
+            if !blocked {
+                ctx.remote_x
+                    .store((m.pt.x as f64).to_bits(), Ordering::SeqCst);
+                ctx.remote_y
+                    .store((m.pt.y as f64).to_bits(), Ordering::SeqCst);
+            }
             ctx.anchor_x.store(m.pt.x, Ordering::SeqCst);
             ctx.anchor_y.store(m.pt.y, Ordering::SeqCst);
-            ctx.gate
-                .push(NativeEvent::Position(m.pt.x as f64, m.pt.y as f64));
+            if !ctx.gate.active() {
+                ctx.gate
+                    .push(NativeEvent::Position(m.pt.x as f64, m.pt.y as f64));
+            }
         }
     } else {
         let event = match message {
@@ -220,20 +446,40 @@ unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT
                 down: message == WM_XBUTTONDOWN,
             }),
             WM_MOUSEWHEEL => Some(Input::Scroll {
+                phase: 0,
+                momentum: 0,
                 x: 0.0,
-                y: ((m.mouseData >> 16) as i16) as f64,
+                y: ((m.mouseData >> 16) as i16) as f64 / 3.0,
             }),
             WM_MOUSEHWHEEL => Some(Input::Scroll {
-                x: ((m.mouseData >> 16) as i16) as f64,
+                phase: 0,
+                momentum: 0,
+                x: ((m.mouseData >> 16) as i16) as f64 / 3.0,
                 y: 0.0,
             }),
             _ => None,
         };
         if let Some(event) = event {
-            ctx.gate.push(NativeEvent::Input(event));
+            if let Input::Button { button, down } = &event {
+                ctx.physical_buttons[*button as usize].store(*down, Ordering::SeqCst);
+                if !blocked || !down {
+                    ctx.local_buttons[*button as usize].store(*down, Ordering::SeqCst);
+                }
+                if !down
+                    && ctx.gate.active()
+                    && ctx.remote_buttons[*button as usize].load(Ordering::SeqCst)
+                {
+                    return 1;
+                }
+            }
+            ctx.gate.push(NativeEvent::Input {
+                generation,
+                event,
+                captured: remote,
+            });
         }
     }
-    if remote {
+    if blocked {
         1
     } else {
         CallNextHookEx(ptr::null_mut(), code, w, l)

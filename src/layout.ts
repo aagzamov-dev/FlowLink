@@ -47,7 +47,7 @@ export function layoutError(
   placements: Placement[],
 ): string | null {
   if (placements.length !== 1)
-    return "Connect a Mac with one display to arrange your screens.";
+    return "Choose one controlled display to arrange your screens.";
   const b = placements[0].rect;
   if (![b.x, b.y, b.width, b.height].every(Number.isFinite))
     return "Display position is invalid.";
@@ -59,7 +59,7 @@ export function layoutError(
       a.y < b.y + b.height - 1 &&
       a.y + a.height > b.y + 1
     )
-      return "Screens overlap. Drag the Mac beside a Windows screen.";
+      return "Screens overlap. Drag the controlled screen beside a main display.";
     const vertical =
       Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
     const horizontal =
@@ -76,7 +76,9 @@ export function layoutError(
     )
       adjacent = true;
   }
-  return adjacent ? null : "Snap the Mac to an edge of a Windows screen.";
+  return adjacent
+    ? null
+    : "Snap the controlled screen to an edge of a main display.";
 }
 export function sortedDevices(devices: Device[], query = ""): Device[] {
   const text = query.trim().toLocaleLowerCase();

@@ -1,0 +1,1 @@
+FlowLink updater verification fixture, not an installer.

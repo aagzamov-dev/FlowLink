@@ -26,8 +26,8 @@ export function ManualConnect({
   return (
     <Modal title="Connect by address" close={close}>
       <p>
-        Find the Mac’s IP in its FlowLink tray panel. Both computers must be
-        reachable on your local network.
+        Find the other computer’s IP in its FlowLink tray panel. Both computers
+        must be reachable on your local network.
       </p>
       <form onSubmit={(e) => void submit(e)}>
         <label className="field">
@@ -46,8 +46,7 @@ export function ManualConnect({
         </p>
         {!canConnect && (
           <p className="info-note">
-            Start the connection from FlowLink on Windows. This Mac receives
-            input.
+            Disconnect the current device before making another connection.
           </p>
         )}
         <div className="modal-actions">
@@ -103,8 +102,8 @@ export function Pairing({ state, run }: { state: Snapshot; run: Run }) {
       {pairing.code ? (
         <>
           <p>
-            Enter this code in FlowLink on Windows. Only approve a computer you
-            recognize.
+            Enter this code on the connecting computer. Only approve a computer
+            you recognize.
           </p>
           <div className="pair-code">{pairing.code}</div>
           <p className="footnote">
@@ -118,7 +117,7 @@ export function Pairing({ state, run }: { state: Snapshot; run: Run }) {
             void answer(code);
           }}
         >
-          <p>Enter the six-digit code displayed on your Mac.</p>
+          <p>Enter the six-digit code displayed on the other computer.</p>
           <input
             className="code-input"
             aria-label="Six-digit pairing code"
@@ -142,7 +141,7 @@ export function Pairing({ state, run }: { state: Snapshot; run: Run }) {
       ) : (
         <>
           <p>
-            This computer is asking to control your Mac’s keyboard and pointer.
+            This computer is asking to share keyboard and pointer control.
             Approve only if you started this connection.
           </p>
           <div className="modal-actions">

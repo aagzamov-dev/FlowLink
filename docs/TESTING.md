@@ -16,7 +16,7 @@ cargo test --workspace
 cargo build --release -p flowlink
 ```
 
-Tests cover partial/corner/negative-coordinate edge geometry, overlap rejection, key mapping stability across app changes, terminal Ctrl+C, held-state cleanup, legal ownership transitions, invalid input, frame length bounds, PAKE wrong-code/identity/role rejection, global pairing throttling, pinned mutual TLS exchange, changed server identity, mouse click sequencing, device sorting/search, IPv6 address formatting, and manual address validation.
+Tests cover bidirectional two-engine ownership changes/handoffs, main-only policy, receiver release, pause races, stale tokens/capture generations, settings-change cleanup, endpoint fallback, fractional scrolling, custom shortcut editing, and partial/corner/negative-coordinate edge geometry, overlap rejection, key mapping stability across app changes, terminal Ctrl+C, held-state cleanup, legal ownership transitions, invalid input, frame length bounds, PAKE wrong-code/identity/role rejection, global pairing throttling, pinned mutual TLS exchange, changed server identity, mouse click sequencing, device sorting/search, IPv6 address formatting, and manual address validation.
 
 A temporary Windows-only check harness under the ignored `.tools/` directory was used to type-check the real Windows platform module against windows-sys on `x86_64-pc-windows-gnu`. Subsequently, the full Windows release executable, Rust tests, Clippy, and frontend checks passed on GitHub's native Windows runner in [run 39236134349](https://github.com/aagzamov-dev/FlowLink/actions/runs/39236134349). This confirms compilation and automated tests, not physical input behavior.
 
@@ -24,9 +24,23 @@ The Check FlowLink workflow now builds an x64 NSIS setup executable on Windows a
 
 Read-only probe: `cargo run -p flowlink-engine --example inspect`. It does not start an input tap, inject events, or write device credentials. Shell sandbox/headless sessions may return no displays even when the physical computer has a screen; record that limitation rather than inventing inventory.
 
+## Version 0.2 regression acceptance
+
+Run every case in **both directions**, with each computer taking a turn as main:
+
+1. Select main from either device, then enable main-only mode. The non-main computer cannot take over, but can always release or pause. Changing roles while typing/dragging releases remote input and requires a new handoff.
+2. Pause both computers, resume each independently, and confirm one local resume cannot clear peer pause. Save settings while remote, disconnect during connection setup, and reject delayed handoff acknowledgements.
+3. Add/edit/delete directional rules (including punctuation), verify Ctrl/Cmd and Shift combinations, repeat and release, AltGr, and terminal exceptions. Confirm local settings survive receiving another computer's configuration. Confirm multiline terminal entries remain editable.
+4. Select a different controlled monitor and use both the button and edges. Add/remove a monitor while connected; both devices must discard old return edges until the arrangement is reviewed.
+5. Try the reachable address after an unavailable address, reconnect after DHCP/VPN changes, cancel pairing/connecting, and confirm reconnect never captures input automatically. Check custom-port and hostname persistence.
+6. Scroll slowly and flick in both axes, then move and click/drag immediately. Test a Mac trackpad and Windows precision touchpad. Native pinch/rotate/three-finger gestures are outside this release.
+7. Repeat on the same LAN, with Kerio connected but local LAN allowed, and across the VPN using a permitted private IP. Confirm TCP 47831 is reachable separately from RDP. Test brief packet stalls: input must release safely while connectivity can recover; longer outages must reconnect without re-pairing.
+
+The first session initiator has auto-connect enabled by default; the receiver does not initiate competing automatic connections. When upgrading an older pair, keep auto-connect enabled on the preferred initiating computer.
+
 ## Physical acceptance
 
-Use Windows 11 with two monitors and MacBook Pro with its built-in display. Start with local input allowed and a visible emergency shortcut.
+Use Windows 11 with two monitors and MacBook Pro with its built-in display; add a Mac external display when checking target selection. Start with local input allowed and a visible emergency shortcut.
 
 1. Fresh install: permission-denied state, permission guidance, native restart readiness, names, addresses, copy exact IP vs IP:port, first pairing, code expiry and cancellation.
 2. Pair over Wi-Fi, then Ethernet. Block multicast and verify manual address fallback. Test DHCP/IP changes, VPN on/off without policy bypass, interface preference, unreachable device, duplicate names, many advertisements, and occupied receiver.
@@ -44,7 +58,44 @@ Record hardware, OS/build versions, interface/adapter, Wi-Fi conditions, monitor
 
 Release requires recorded physical results and a pairing/security review. Never label the application production-ready on the basis of these automated checks alone.
 
-## Recorded local verification — 2026-10-19
+## Update configuration verification — 2026-10-24 (version 0.2)
+
+The update configuration has been checked locally without publishing a release, uploading assets, installing an update, or restarting the user's app.
+
+| Check | Result |
+| --- | --- |
+| Rust workspace tests | 55 passed: 49 engine tests and 6 updater tests |
+| Update verification | Official Tauri verifier accepted the fixture and rejected modified bytes, a relabelled version and a downgrade |
+| Update lifecycle | Duplicate/overlapping operations blocked; failed installation retains verified bytes; settings/tray resume blocked during installation; old settings migrate |
+| Frontend tests | 16 passed, including download/install state, unknown-size progress, preview controls, failure messages and escaped release notes |
+| Release preparation tests | 5 passed: matching versions, missing signing credentials, signature key/version metadata, all-platform manifest and invalid/incomplete package rejection |
+| TypeScript, ESLint, Rust formatting, Clippy, frontend build | Passed |
+| UI | Settings update card inspected in the browser preview; automatic-check toggle and disabled preview update button visible |
+| macOS Apple Silicon package | Local app and updater archive built; bundle signature checked; archive signature verified with the configured public key and modified archive rejected |
+| Workflow | YAML parsed/formatted; manual dispatch only, read-only repository permission, no publishing step; not dispatched |
+
+The updater archive is about 4.4 MiB and the app about 9.9 MiB in this local build. The Mac bundle is ad-hoc signed, not Developer ID signed/notarized. Windows/Intel release builds, production certificate integration and a real installed-app upgrade have not been run for this change. The configured GitHub repository was confirmed public; no feed or release was published.
+
+Before publication, install two successive production-signed versions on each supported platform. Check available/current/unavailable results; interrupted downloads over LAN and VPN; changed/corrupt signatures; install cancellation, permissions and disk-space failure; download while sharing; safe key/button release before restart; paused state after restart; old trust/settings retention; and both devices reconnecting after an upgrade. On Windows verify NSIS relaunch and per-user install location; on Mac verify replacement in Applications, notarization and retained/re-requested input permissions. Use an isolated test feed/build, never repoint existing users to test artifacts. See [UPDATES.md](UPDATES.md).
+
+## Recorded local verification — 2026-10-24 (version 0.2 input/network work)
+
+The 0.2 changes are checked locally on macOS. Native runtime behavior on a physical Windows peer and a real Kerio connection has not been measured. The Windows platform source is cross-checked against windows-sys; this is not a complete Windows installer build. Earlier CI results below apply to the earlier revision.
+
+| Check | Result |
+| --- | --- |
+| Rust regression suite | 49 passed, including loopback endpoint fallback/TLS and simulated two-engine control in both directions |
+| Frontend tests | 13 passed |
+| Strict TypeScript, ESLint, frontend production build | Passed |
+| Rust formatting and Clippy with warnings denied | Passed |
+| Windows platform module | Cross-target type/lint check passed against windows-sys 0.61.2; not a complete Windows executable build |
+| Interface preview | Adding/editing a directional punctuation shortcut and Mac → Windows rule verified; multiline terminal entries preserved; editor layout inspected |
+| macOS arm64 app | Release bundle built with ad-hoc signing; not notarized |
+| Physical Mac ↔ Windows / Kerio | Not run; no physical Windows peer available in this session |
+
+Tests use a simulated native input backend; they do not install live hooks or inject system input. Native key translation and Mac callback bookkeeping also have isolated tests. The final bundle is `target/release/bundle/macos/FlowLink.app`; both computers need matching version 0.2 builds.
+
+## Historical local verification — 2026-10-19 (version 0.1)
 
 | Check | Observed result |
 | --- | --- |

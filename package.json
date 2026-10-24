@@ -1,17 +1,18 @@
 {
   "name": "flowlink",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run src && node --test scripts/*.test.mjs",
     "lint": "eslint src",
     "tauri": "node scripts/desktop.mjs",
     "desktop": "node scripts/desktop.mjs dev",
-    "desktop:build": "node scripts/desktop.mjs build"
+    "desktop:build": "node scripts/desktop.mjs build",
+    "release:check": "node scripts/release.mjs check"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",

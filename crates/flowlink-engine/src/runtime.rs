@@ -5,11 +5,10 @@ use crate::{
     model::*,
     pairing::{self, Exchange},
     platform::{self, Native},
-    protocol::{self, Hello, Message, PairMessage},
+    protocol::{self, ControlToken, Hello, Message, PairMessage},
     storage::Store,
     transport, Result,
 };
-#[cfg(target_os = "macos")]
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::{
@@ -27,7 +26,6 @@ use tokio::{
     time::timeout,
 };
 
-#[cfg(target_os = "macos")]
 use tokio::net::TcpListener;
 
 type SecureStream = tokio_rustls::TlsStream<TcpStream>;
@@ -38,6 +36,8 @@ struct Peer {
     new_pair: bool,
     controller: bool,
     local_ip: String,
+    endpoint: Option<String>,
+    attempt_id: u64,
 }
 struct Pending {
     id: String,
@@ -51,7 +51,6 @@ pub struct Engine {
     pending: Mutex<Option<Pending>>,
     busy: AtomicBool,
     reconnect_suspended: AtomicBool,
-    #[cfg(target_os = "macos")]
     limiter: Mutex<crate::pairing::PairingLimiter>,
     safety: Mutex<SessionSafety>,
     sequence: std::sync::atomic::AtomicU64,
@@ -61,65 +60,19 @@ pub struct Engine {
     switch_requested: AtomicBool,
     pub identify_requested: AtomicBool,
     cancel: tokio::sync::Notify,
+    operation: Mutex<()>,
+    initiator: AtomicBool,
+    token: Mutex<ControlToken>,
+    remote_settings: Mutex<Settings>,
+    host_edges: Mutex<Vec<geometry::Edge>>,
+    attempt: std::sync::atomic::AtomicU64,
 }
 impl Engine {
     pub fn start(directory: &Path) -> Result<Arc<Self>> {
         let store = Arc::new(Store::open(directory)?);
-        let settings = store.settings();
         let displays = platform::displays(&store.identity.id)?;
         let (native, events) = Native::start()?;
-        native
-            .gate
-            .emergency_key
-            .store(settings.emergency_key, Ordering::SeqCst);
-        let engine = Arc::new(Self {
-            state: Mutex::new(Snapshot {
-                device_id: store.identity.id.clone(),
-                os: std::env::consts::OS.into(),
-                settings: settings.clone(),
-                ownership: if settings.paused {
-                    Ownership::Paused
-                } else {
-                    Ownership::Disconnected
-                },
-                devices: store
-                    .trusted()
-                    .into_iter()
-                    .map(|mut d| {
-                        d.device.online = false;
-                        d.device.trusted = true;
-                        d.device
-                    })
-                    .collect(),
-                addresses: discovery::addresses(),
-                port: PORT,
-                displays,
-                placements: Vec::new(),
-                connected_id: None,
-                permissions: platform::permissions(),
-                pairing: None,
-                error: None,
-                status: "Ready to connect".into(),
-                latency_ms: None,
-                peer_paused: false,
-            }),
-            store,
-            native,
-            connection: Mutex::new(None),
-            pending: Mutex::new(None),
-            busy: AtomicBool::new(false),
-            reconnect_suspended: AtomicBool::new(false),
-            #[cfg(target_os = "macos")]
-            limiter: Mutex::new(crate::pairing::PairingLimiter::default()),
-            safety: Mutex::new(SessionSafety::new(settings.paused)),
-            sequence: std::sync::atomic::AtomicU64::new(0),
-            edge_since: Mutex::new(None),
-            return_edges: Mutex::new(Vec::new()),
-            shutdown: AtomicBool::new(false),
-            switch_requested: AtomicBool::new(false),
-            identify_requested: AtomicBool::new(false),
-            cancel: tokio::sync::Notify::new(),
-        });
+        let engine = Self::new(store, native, displays);
         let weak = Arc::downgrade(&engine);
         std::thread::Builder::new()
             .name("flowlink-discovery".into())
@@ -148,7 +101,7 @@ impl Engine {
                             &engine.store.identity.id,
                             &name,
                             std::env::consts::OS,
-                            cfg!(target_os = "macos"),
+                            true,
                             engine.busy.load(Ordering::SeqCst),
                             settings.interface.as_deref(),
                         ) {
@@ -190,11 +143,19 @@ impl Engine {
                 if engine.shutdown.load(Ordering::SeqCst) {
                     break;
                 }
+                if engine.native.gate.fault.swap(false, Ordering::SeqCst) {
+                    while events.try_recv().is_ok() {}
+                    engine.return_local();
+                    engine.safety.lock().unwrap_or_else(|e| e.into_inner()).release();
+                    engine.error("Input interrupted; control restored locally. You can switch again when ready".into());
+                }
                 match events.recv_timeout(Duration::from_millis(25)) {
                     Ok(event) => engine.native_event(event),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        let (x, y) = engine.native.cursor();
-                        if cfg!(target_os = "windows") {
+                        let waiting_at_edge = engine.edge_since.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+                        if waiting_at_edge && engine.is_controller() {
+                            let _operation = engine.operation.lock().unwrap_or_else(|e| e.into_inner());
+                            let (x, y) = engine.native.cursor();
                             engine.host_position(x, y);
                         }
                     }
@@ -205,7 +166,6 @@ impl Engine {
         tokio::spawn(async move {
             engine_clone.maintenance().await;
         });
-        #[cfg(target_os = "macos")]
         {
             let engine_clone = engine.clone();
             tokio::spawn(async move {
@@ -215,6 +175,224 @@ impl Engine {
             });
         }
         Ok(engine)
+    }
+    fn new(store: Arc<Store>, native: Arc<Native>, displays: Vec<Display>) -> Arc<Self> {
+        let settings = store.settings();
+        native
+            .gate
+            .emergency_key
+            .store(settings.emergency_key, Ordering::SeqCst);
+        Arc::new(Self {
+            state: Mutex::new(Snapshot {
+                device_id: store.identity.id.clone(),
+                os: std::env::consts::OS.into(),
+                settings: settings.clone(),
+                ownership: if settings.paused {
+                    Ownership::Paused
+                } else {
+                    Ownership::Disconnected
+                },
+                devices: store
+                    .trusted()
+                    .into_iter()
+                    .map(|mut d| {
+                        d.device.online = false;
+                        d.device.trusted = true;
+                        d.device
+                    })
+                    .collect(),
+                addresses: discovery::addresses(),
+                port: PORT,
+                displays,
+                placements: Vec::new(),
+                connected_id: None,
+                permissions: platform::permissions(),
+                pairing: None,
+                error: None,
+                status: "Ready to connect".into(),
+                latency_ms: None,
+                peer_paused: false,
+                controller_id: None,
+                control_from_either: true,
+            }),
+            store,
+            native,
+            connection: Mutex::new(None),
+            pending: Mutex::new(None),
+            busy: AtomicBool::new(false),
+            reconnect_suspended: AtomicBool::new(false),
+            limiter: Mutex::new(crate::pairing::PairingLimiter::default()),
+            safety: Mutex::new(SessionSafety::new(settings.paused)),
+            sequence: std::sync::atomic::AtomicU64::new(0),
+            edge_since: Mutex::new(None),
+            return_edges: Mutex::new(Vec::new()),
+            shutdown: AtomicBool::new(false),
+            switch_requested: AtomicBool::new(false),
+            identify_requested: AtomicBool::new(false),
+            cancel: tokio::sync::Notify::new(),
+            operation: Mutex::new(()),
+            initiator: AtomicBool::new(false),
+            token: Mutex::new(ControlToken::default()),
+            remote_settings: Mutex::new(settings.clone()),
+            host_edges: Mutex::new(Vec::new()),
+            attempt: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+    fn is_controller(&self) -> bool {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.controller_id.as_deref() == Some(&s.device_id)
+    }
+    fn current_token(&self) -> ControlToken {
+        *self.token.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn next_handoff(&self) -> ControlToken {
+        let mut token = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        token.handoff += 1;
+        *token
+    }
+    fn idle_ownership(&self) -> Ownership {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if s.settings.paused || s.peer_paused {
+            Ownership::Paused
+        } else if s.connected_id.is_some() {
+            Ownership::Local
+        } else {
+            Ownership::Disconnected
+        }
+    }
+    fn clear_topology(&self) {
+        self.return_edges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.host_edges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        *self.edge_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.update(|s| s.placements.clear());
+    }
+    pub fn configure_control(&self, controller_id: String, from_either: bool) -> Result<()> {
+        let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
+        self.configure_control_inner(controller_id, from_either)
+    }
+    fn configure_control_inner(&self, controller_id: String, from_either: bool) -> Result<()> {
+        let s = self.snapshot();
+        if s.connected_id.is_none() {
+            return Err("Connect a device first".into());
+        }
+        if !s.control_from_either && !self.is_controller() {
+            return Err("Change the main device from the current main computer".into());
+        }
+        self.release_control();
+        if self.initiator.load(Ordering::SeqCst) {
+            self.apply_control_request(controller_id, from_either, &s.device_id)
+        } else {
+            self.send(Message::ControlRequest {
+                controller_id,
+                from_either,
+            })
+        }
+    }
+    fn apply_control_request(
+        &self,
+        controller_id: String,
+        from_either: bool,
+        requester: &str,
+    ) -> Result<()> {
+        let s = self.snapshot();
+        if !s.control_from_either && s.controller_id.as_deref() != Some(requester) {
+            return Ok(());
+        }
+        if controller_id != s.device_id && s.connected_id.as_deref() != Some(&controller_id) {
+            return Err("Unknown main device".into());
+        }
+        let revision = self.current_token().revision + 1;
+        self.send(Message::ControlState {
+            controller_id: controller_id.clone(),
+            from_either,
+            revision,
+        })?;
+        self.apply_control(controller_id, from_either, revision)
+    }
+    fn apply_control(&self, controller_id: String, from_either: bool, revision: u64) -> Result<()> {
+        let s = self.snapshot();
+        if controller_id != s.device_id && s.connected_id.as_deref() != Some(&controller_id) {
+            return Err("Unknown main device".into());
+        }
+        self.native.release();
+        self.clear_topology();
+        self.safety
+            .lock()
+            .map_err(|_| "Input unavailable")?
+            .release();
+        self.switch_requested.store(false, Ordering::SeqCst);
+        *self.token.lock().map_err(|_| "Control unavailable")? = ControlToken {
+            revision,
+            handoff: 0,
+        };
+        self.update(|s| {
+            s.controller_id = Some(controller_id.clone());
+            s.control_from_either = from_either;
+        });
+        self.ownership(self.idle_ownership());
+        {
+            let mut config = self
+                .store
+                .config
+                .lock()
+                .map_err(|_| "Settings unavailable")?;
+            if let Some(saved) = config
+                .trusted
+                .iter_mut()
+                .find(|d| Some(&d.device.id) == s.connected_id.as_ref())
+            {
+                saved.controller_id = Some(controller_id);
+                saved.control_from_either = from_either;
+            }
+        }
+        self.store.save()?;
+        if self.is_controller() {
+            self.send(Message::Configuration {
+                revision,
+                settings: InputSettings::from_settings(&self.store.settings()),
+            })?;
+            let local = s
+                .displays
+                .iter()
+                .filter(|d| d.device_id == s.device_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let saved = self
+                .store
+                .trusted()
+                .into_iter()
+                .find(|d| Some(&d.device.id) == s.connected_id.as_ref());
+            if let Some(saved) = saved {
+                if geometry::validate_layout(&local, &saved.placements).is_ok()
+                    && saved.host_display_ids.len() == local.len()
+                    && local.iter().all(|d| saved.host_display_ids.contains(&d.id))
+                    && saved.placements.iter().all(|p| {
+                        s.displays.iter().any(|d| {
+                            d.device_id != s.device_id
+                                && d.id == p.display_id
+                                && (p.rect.width - d.rect.width).abs() < 1.0
+                                && (p.rect.height - d.rect.height).abs() < 1.0
+                        })
+                    })
+                {
+                    *self.host_edges.lock().map_err(|_| "Topology unavailable")? =
+                        geometry::edges(&local, &saved.placements);
+                    self.update(|s| s.placements = saved.placements.clone());
+                    self.send(Message::Layout {
+                        revision,
+                        placements: saved.placements,
+                        host_displays: local,
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
@@ -229,7 +407,7 @@ impl Engine {
     }
     fn ownership(&self, next: Ownership) {
         let mut safety = self.safety.lock().unwrap_or_else(|e| e.into_inner());
-        if cfg!(target_os = "macos")
+        if !self.is_controller()
             && matches!(
                 next,
                 Ownership::Local | Ownership::Paused | Ownership::Disconnected
@@ -308,15 +486,13 @@ impl Engine {
         }))?)
     }
     pub fn save_settings(&self, settings: Settings) -> Result<()> {
+        let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
+        self.save_settings_inner(settings)
+    }
+    fn save_settings_inner(&self, settings: Settings) -> Result<()> {
         settings.validate()?;
-        if !settings.paused && self.store.settings().paused {
-            let _ = self.send(Message::Resume);
-        }
-        if settings.paused {
-            self.native.release();
-            let _ = self.send(Message::Pause);
-            self.ownership(Ownership::Paused);
-        }
+        let was_paused = self.store.settings().paused;
+        self.release_control();
         self.native
             .gate
             .emergency_key
@@ -327,97 +503,102 @@ impl Engine {
             .map_err(|_| "Settings unavailable")?
             .settings = settings.clone();
         self.store.save()?;
-        if cfg!(target_os = "windows") {
+        self.update(|s| s.settings = settings.clone());
+        self.ownership(self.idle_ownership());
+        if settings.paused != was_paused {
+            let _ = self.send(if settings.paused {
+                Message::Pause
+            } else {
+                Message::Resume
+            });
+        }
+        if self.is_controller() {
             let _ = self.send(Message::Configuration {
+                revision: self.current_token().revision,
                 settings: InputSettings::from_settings(&settings),
             });
-        }
-        self.update(|s| {
-            s.settings = settings.clone();
-            if !settings.paused && s.ownership == Ownership::Paused {
-                s.ownership = if s.peer_paused {
-                    Ownership::Paused
-                } else if s.connected_id.is_some() {
-                    Ownership::Local
-                } else {
-                    Ownership::Disconnected
-                };
-            }
-        });
-        if !settings.paused {
-            let snapshot = self.snapshot();
-            self.ownership(if snapshot.peer_paused {
-                Ownership::Paused
-            } else if snapshot.connected_id.is_some() {
-                Ownership::Local
-            } else {
-                Ownership::Disconnected
-            });
-        }
-        if self.native.gate.active() {
-            if settings.allow_local_input {
-                self.native.gate.block_local.store(false, Ordering::SeqCst);
-            } else {
-                self.return_local();
-            }
         }
         Ok(())
     }
     pub fn pause(&self, paused: bool) -> Result<()> {
+        let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
         let mut settings = self.store.settings();
         settings.paused = paused;
-        self.save_settings(settings)
+        self.save_settings_inner(settings)
     }
     pub fn return_local(&self) {
+        let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
+        self.release_control();
+    }
+    fn release_control(&self) {
         self.native.release();
-        let _ = self.send(Message::Release);
-        self.ownership(if self.store.settings().paused {
-            Ownership::Paused
-        } else if self.snapshot().connected_id.is_some() {
-            Ownership::Local
-        } else {
-            Ownership::Disconnected
+        let _ = self.send(Message::Release {
+            token: self.current_token(),
         });
+        self.switch_requested.store(false, Ordering::SeqCst);
+        self.ownership(self.idle_ownership());
     }
     pub fn identify(&self) {
         self.identify_requested.store(true, Ordering::SeqCst);
         let _ = self.send(Message::Identify);
     }
     pub fn switch_control(&self) -> Result<()> {
+        let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
+        self.switch_control_inner()
+    }
+    fn switch_control_inner(&self) -> Result<()> {
         let s = self.snapshot();
         if s.ownership == Ownership::Remote {
-            self.return_local();
+            self.release_control();
             return Ok(());
+        }
+        if !self.is_controller() {
+            return self.configure_control_inner(
+                self.store.identity.id.clone(),
+                self.snapshot().control_from_either,
+            );
         }
         if s.ownership != Ownership::Local || s.settings.paused || s.peer_paused {
             return Err("Connect and resume sharing first".into());
         }
-        if !self
-            .safety
-            .lock()
-            .map_err(|_| "Input state unavailable")?
-            .can_handoff()
+        if self.native.has_local_input()
+            || !self
+                .safety
+                .lock()
+                .map_err(|_| "Input state unavailable")?
+                .can_handoff()
         {
             return Err("Release held keys and mouse buttons before switching".into());
         }
         let target = s
-            .displays
-            .iter()
-            .find(|d| d.device_id != s.device_id)
-            .ok_or("No Mac display connected")?;
+            .placements
+            .first()
+            .and_then(|placement| {
+                s.displays
+                    .iter()
+                    .find(|d| d.device_id != s.device_id && d.id == placement.display_id)
+            })
+            .or_else(|| s.displays.iter().find(|d| d.device_id != s.device_id))
+            .ok_or("No peer display connected")?;
         self.ownership(Ownership::Requesting);
         self.send(Message::Handoff {
+            token: self.next_handoff(),
             display_id: target.id.clone(),
             x: target.rect.x + target.rect.width / 2.0,
             y: target.rect.y + target.rect.height / 2.0,
         })
     }
     pub fn disconnect(&self) {
+        let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
         self.reconnect_suspended.store(true, Ordering::SeqCst);
+        self.attempt.fetch_add(1, Ordering::SeqCst);
+        self.cancel_pairing();
         self.clear_connection();
     }
     fn clear_connection(&self) {
         self.native.release();
+        self.clear_topology();
+        self.switch_requested.store(false, Ordering::SeqCst);
         let _ = self.send(Message::Goodbye);
         self.connection
             .lock()
@@ -425,6 +606,7 @@ impl Engine {
             .take();
         self.update(|s| {
             s.connected_id = None;
+            s.controller_id = None;
             s.pairing = None;
             s.placements.clear();
             s.displays.retain(|d| d.device_id == s.device_id);
@@ -536,13 +718,14 @@ impl Engine {
         }
     }
     pub fn save_layout(&self, placements: Vec<Placement>) -> Result<()> {
-        if !cfg!(target_os = "windows") {
-            return Err("Arrange displays on the Windows controller".into());
+        let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
+        if !self.is_controller() {
+            return Err("Arrange displays on the main device".into());
         }
         let snapshot = self.snapshot();
         let id = snapshot
             .connected_id
-            .ok_or("Connect a Mac before arranging displays")?;
+            .ok_or("Connect a device before arranging displays")?;
         let local = snapshot
             .displays
             .iter()
@@ -555,7 +738,7 @@ impl Engine {
             .iter()
             .filter(|d| d.device_id == id)
             .collect::<Vec<_>>();
-        if placements.len() != remote.len()
+        if placements.len() != 1
             || placements.iter().any(|p| {
                 !remote.iter().any(|d| {
                     d.id == p.display_id
@@ -566,7 +749,7 @@ impl Engine {
         {
             return Err("Display identity or dimensions changed; reset the layout".into());
         }
-        self.return_local();
+        self.release_control();
         let mut config = self
             .store
             .config
@@ -583,16 +766,16 @@ impl Engine {
         }
         drop(config);
         self.store.save()?;
+        *self.host_edges.lock().map_err(|_| "Topology unavailable")? =
+            geometry::edges(&local, &placements);
         self.update(|s| s.placements = placements.clone());
         self.send(Message::Layout {
+            revision: self.current_token().revision,
             placements,
             host_displays: local,
         })
     }
     pub fn connect(self: &Arc<Self>, address: String) -> Result<()> {
-        if !cfg!(target_os = "windows") {
-            return Err("Start connections from the Windows computer".into());
-        }
         if self
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -606,13 +789,15 @@ impl Engine {
             s.status = "Connecting…".into();
         });
         let engine = self.clone();
+        let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {
-            let result = engine.clone().connect_inner(address).await;
+            let result = engine.clone().connect_inner(address, attempt).await;
             engine.finish_connection(result);
         });
         Ok(())
     }
     fn finish_connection(&self, result: Result<()>) {
+        let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
         self.native.release();
         self.safety
             .lock()
@@ -628,18 +813,102 @@ impl Engine {
             self.error(error.to_string());
         }
     }
-    async fn connect_inner(self: Arc<Self>, address: String) -> Result<()> {
+    async fn connect_inner(self: Arc<Self>, address: String, attempt_id: u64) -> Result<()> {
         let target = normalize_address(&address)?;
-        let endpoints = timeout(Duration::from_secs(4), tokio::net::lookup_host(&target))
-            .await??
-            .filter(|a| discovery::is_lan(a.ip()))
-            .collect::<Vec<_>>();
+        let mut targets = vec![target.clone()];
+        if let Some(device) = self
+            .snapshot()
+            .devices
+            .into_iter()
+            .find(|d| d.addresses.iter().any(|ip| endpoint(ip, d.port) == target))
+        {
+            for ip in &device.addresses {
+                let address = endpoint(ip, device.port);
+                if !targets.contains(&address) {
+                    targets.push(address);
+                }
+            }
+        }
+        let mut expected_id = None;
+        for saved in self.store.trusted() {
+            let live = self
+                .snapshot()
+                .devices
+                .into_iter()
+                .find(|d| d.id == saved.device.id)
+                .unwrap_or(saved.device.clone());
+            if live
+                .addresses
+                .iter()
+                .any(|a| endpoint(a, live.port) == target)
+                || saved.endpoint.as_deref() == Some(target.as_str())
+                || saved
+                    .device
+                    .addresses
+                    .iter()
+                    .any(|a| endpoint(a, saved.device.port) == target)
+            {
+                expected_id = Some(saved.device.id.clone());
+                if let Some(host) = saved.endpoint {
+                    if !targets.contains(&host) {
+                        targets.push(host);
+                    }
+                }
+                let live = self
+                    .snapshot()
+                    .devices
+                    .into_iter()
+                    .find(|d| d.id == saved.device.id)
+                    .unwrap_or(saved.device.clone());
+                for ip in live.addresses.iter().chain(saved.device.addresses.iter()) {
+                    let address = endpoint(ip, live.port);
+                    if !targets.contains(&address) {
+                        targets.push(address);
+                    }
+                }
+            }
+        }
+        let mut resolutions = tokio::task::JoinSet::new();
+        for (index, target) in targets.into_iter().take(32).enumerate() {
+            resolutions.spawn(async move {
+                let resolved =
+                    timeout(Duration::from_secs(2), tokio::net::lookup_host(target)).await;
+                let addresses = match resolved {
+                    Ok(Ok(addresses)) => addresses
+                        .filter(|a| discovery::is_lan(a.ip()))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                };
+                (index, addresses)
+            });
+        }
+        let mut resolved = Vec::new();
+        loop {
+            tokio::select! {
+                result = resolutions.join_next() => match result {
+                    Some(Ok(result)) => resolved.push(result),
+                    Some(Err(_)) => {},
+                    None => break,
+                },
+                _ = self.cancel.notified() => return Err("Connection cancelled".into()),
+            }
+        }
+        resolved.sort_by_key(|(index, _)| *index);
+        let mut endpoints = Vec::new();
+        for address in resolved.into_iter().flat_map(|(_, addresses)| addresses) {
+            if !endpoints.contains(&address) {
+                endpoints.push(address);
+            }
+        }
         if endpoints.is_empty() {
             return Err("Use a private LAN IP address or hostname".into());
         }
-        let mut connected = None;
+        let mut attempts = Vec::new();
         let settings = self.store.settings();
-        'endpoints: for endpoint in endpoints {
+        for endpoint in endpoints {
+            if self.attempt.load(Ordering::SeqCst) != attempt_id {
+                return Err("Connection cancelled".into());
+            }
             let last = self
                 .store
                 .trusted()
@@ -693,28 +962,17 @@ impl Engine {
                 .map(|(_, _, a)| Some(a))
                 .collect::<Vec<_>>();
             if settings.interface.is_none() {
-                routes.push(None);
+                routes.insert(0, None);
             }
-            for route in routes {
-                let attempt = async {
-                    let socket = if endpoint.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4()?
-                    } else {
-                        tokio::net::TcpSocket::new_v6()?
-                    };
-                    if let Some(route) = route {
-                        socket.bind(route)?;
-                    }
-                    socket.connect(endpoint).await
-                };
-                if let Ok(Ok(stream)) = timeout(Duration::from_secs(2), attempt).await {
-                    connected = Some(stream);
-                    break 'endpoints;
-                }
-            }
+            attempts.extend(routes.into_iter().map(|route| (endpoint, route)));
         }
-        let mut stream = connected
-            .ok_or("Device unreachable. Check Wi-Fi/Ethernet, firewall, and VPN LAN access")?;
+        let mut stream = tokio::select! {
+            result = connect_routes(attempts) => result?,
+            _ = self.cancel.notified() => return Err("Connection cancelled".into()),
+        };
+        if self.attempt.load(Ordering::SeqCst) != attempt_id {
+            return Err("Connection cancelled".into());
+        }
         stream.set_nodelay(true)?;
         let peer = stream.peer_addr()?;
         protocol::write(
@@ -793,6 +1051,12 @@ impl Engine {
         };
         let local_ip = stream.local_addr()?.ip().to_string();
         let id = hex::encode(Sha256::digest(&cert));
+        if expected_id.as_ref().is_some_and(|expected| expected != &id) {
+            return Err(
+                "The address belongs to a different device identity; select that device explicitly"
+                    .into(),
+            );
+        }
         let connector = tokio_rustls::TlsConnector::from(transport::client(
             &self.store.identity,
             cert.clone(),
@@ -805,6 +1069,9 @@ impl Engine {
             ),
         )
         .await??;
+        if self.attempt.load(Ordering::SeqCst) != attempt_id {
+            return Err("Connection cancelled".into());
+        }
         self.session(
             SecureStream::Client(tls),
             Peer {
@@ -814,14 +1081,16 @@ impl Engine {
                 new_pair,
                 controller: true,
                 local_ip,
+                endpoint: Some(target),
+                attempt_id,
             },
         )
         .await
     }
-    #[cfg(target_os = "macos")]
     async fn listen(self: Arc<Self>) -> Result<()> {
         let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
         let listener6 = TcpListener::bind(("::", PORT)).await.ok();
+        let handshakes = Arc::new(tokio::sync::Semaphore::new(8));
         loop {
             let (mut stream, peer) = tokio::select! {result=listener.accept()=>result?,result=async{match &listener6{Some(listener)=>listener.accept().await,None=>std::future::pending().await}}=>result?};
             if self.shutdown.load(Ordering::SeqCst) {
@@ -839,39 +1108,63 @@ impl Engine {
             if !allowed {
                 continue;
             }
-            if self
-                .busy
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
-                tokio::spawn(async move {
-                    let _ = timeout(Duration::from_secs(1), async {
-                        let _ = protocol::read::<Hello>(&mut stream).await;
+            let Ok(permit) = handshakes.clone().try_acquire_owned() else {
+                continue;
+            };
+            let engine = self.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let hello =
+                    match timeout(Duration::from_secs(4), protocol::read::<Hello>(&mut stream))
+                        .await
+                    {
+                        Ok(Ok(hello)) => hello,
+                        _ => return,
+                    };
+                if let Err(error) = hello.validate() {
+                    let _ = timeout(
+                        Duration::from_secs(1),
+                        protocol::write(
+                            &mut stream,
+                            &PairMessage::Rejected {
+                                reason: format!("{error}. Update FlowLink on both computers"),
+                            },
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                if engine
+                    .busy
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    let _ = timeout(
+                        Duration::from_secs(1),
                         protocol::write(
                             &mut stream,
                             &PairMessage::Rejected {
                                 reason: "Device busy".into(),
                             },
-                        )
-                        .await
-                    })
+                        ),
+                    )
                     .await;
-                });
-                continue;
-            }
-            let engine = self.clone();
-            tokio::spawn(async move {
-                let result = engine.clone().accept_inner(stream, peer).await;
+                    return;
+                }
+                let result = engine.clone().accept_inner(stream, peer, hello).await;
                 engine.finish_connection(result);
             });
         }
         Ok(())
     }
-    #[cfg(target_os = "macos")]
-    async fn accept_inner(self: Arc<Self>, mut stream: TcpStream, peer: SocketAddr) -> Result<()> {
+    async fn accept_inner(
+        self: Arc<Self>,
+        mut stream: TcpStream,
+        peer: SocketAddr,
+        hello: Hello,
+    ) -> Result<()> {
+        let attempt_id = self.attempt.load(Ordering::SeqCst);
         stream.set_nodelay(true)?;
-        let hello: Hello = timeout(Duration::from_secs(4), protocol::read(&mut stream)).await??;
-        hello.validate()?;
         let cert = hex::decode(&hello.certificate)?;
         let id = hex::encode(Sha256::digest(&cert));
         let trusted = self
@@ -879,11 +1172,11 @@ impl Engine {
             .trusted()
             .iter()
             .any(|d| d.device.id == id && d.certificate == hello.certificate);
-        if self.store.settings().paused {
+        if self.store.settings().paused && !trusted {
             protocol::write(
                 &mut stream,
                 &PairMessage::Rejected {
-                    reason: "Sharing is paused on the Mac".into(),
+                    reason: "Sharing is paused on the receiving device".into(),
                 },
             )
             .await?;
@@ -962,7 +1255,7 @@ impl Engine {
                     if pairing::verify(&key, &transcript, b"controller", &hex::decode(proof)?)
                         .is_err()
                     {
-                        protocol::write(&mut stream,&PairMessage::Rejected{reason:"Pairing code did not match. Approve a new pairing attempt on the Mac".into()}).await?;
+                        protocol::write(&mut stream,&PairMessage::Rejected{reason:"Pairing code did not match. Approve a new pairing attempt on the receiving device".into()}).await?;
                         return Err("Pairing code did not match".into());
                     }
                     protocol::write(
@@ -980,6 +1273,9 @@ impl Engine {
         let acceptor =
             tokio_rustls::TlsAcceptor::from(transport::server(&self.store.identity, cert.clone())?);
         let tls = timeout(Duration::from_secs(5), acceptor.accept(stream)).await??;
+        if self.attempt.load(Ordering::SeqCst) != attempt_id {
+            return Err("Connection cancelled".into());
+        }
         self.session(
             SecureStream::Server(tls),
             Peer {
@@ -989,6 +1285,8 @@ impl Engine {
                 new_pair: !trusted,
                 controller: false,
                 local_ip,
+                endpoint: None,
+                attempt_id,
             },
         )
         .await
@@ -1001,6 +1299,8 @@ impl Engine {
             new_pair,
             controller,
             local_ip,
+            endpoint: manual_endpoint,
+            attempt_id,
         } = peer_info;
         let local_displays = platform::displays(&self.store.identity.id)?;
         protocol::write(
@@ -1009,17 +1309,20 @@ impl Engine {
                 device_id: self.store.identity.id.clone(),
                 name: self.store.settings().device_name,
                 displays: local_displays.clone(),
+                os: std::env::consts::OS.into(),
             },
         )
         .await?;
         let response: Message =
             timeout(Duration::from_secs(4), protocol::read(&mut stream)).await??;
-        let (name, remote_displays) = match response {
+        let (name, remote_displays, peer_os) = match response {
             Message::Welcome {
                 device_id,
                 displays,
                 name,
+                os,
             } if device_id == id
+                && ["windows", "macos"].contains(&os.as_str())
                 && !name.is_empty()
                 && name.len() <= 80
                 && !name.chars().any(char::is_control)
@@ -1033,108 +1336,114 @@ impl Engine {
                         && d.scale > 0.0
                 }) =>
             {
-                (name, displays)
+                (name, displays, os)
             }
             _ => return Err("Invalid peer display inventory".into()),
         };
-        if controller && remote_displays.len() != 1 {
-            return Err(
-                "This release supports one Mac display. Disconnect additional Mac displays".into(),
-            );
-        }
-        if new_pair {
-            self.store.trust(TrustedDevice {
-                device: Device {
-                    id: id.clone(),
-                    name: name.clone(),
-                    os: if controller { "macos" } else { "windows" }.into(),
-                    addresses: vec![peer.ip().to_string()],
-                    port: PORT,
-                    online: true,
-                    busy: false,
-                    trusted: true,
-                    favorite: false,
-                    auto_connect: true,
-                    last_seen: discovery::now(),
-                },
-                certificate: hex::encode(certificate),
-                placements: Vec::new(),
-                last_local_ip: Some(local_ip.clone()),
-                host_display_ids: Vec::new(),
-            })?;
-        } else {
-            let mut config = self
-                .store
-                .config
-                .lock()
-                .map_err(|_| "Settings unavailable")?;
-            if let Some(d) = config.trusted.iter_mut().find(|d| d.device.id == id) {
-                if controller {
-                    d.device.addresses = vec![peer.ip().to_string()];
-                    d.last_local_ip = Some(local_ip.clone());
-                }
-                d.device.name = name.clone();
-                d.device.last_seen = discovery::now();
-            }
-            drop(config);
-            self.store.save()?;
-        }
         let (tx, mut outgoing) = mpsc::channel::<Message>(512);
-        *self
-            .connection
-            .lock()
-            .map_err(|_| "Connection unavailable")? = Some(tx.clone());
-        let mut all = local_displays.clone();
-        all.extend(remote_displays.clone());
-        self.update(|s| {
-            s.connected_id = Some(id.clone());
-            s.peer_paused = false;
-            s.pairing = None;
-            s.error = None;
-            s.displays = all;
-            s.status = format!("Connected to {name}");
-        });
-        let saved = self
-            .store
-            .trusted()
-            .into_iter()
-            .find(|t| t.device.id == id)
-            .ok_or("Trust was revoked")?;
-        self.discovered(saved.device.clone());
-        self.ownership(if self.store.settings().paused {
-            Ownership::Paused
-        } else {
-            Ownership::Local
-        });
-        if controller {
-            tx.try_send(Message::Configuration {
-                settings: InputSettings::from_settings(&self.store.settings()),
-            })?;
-            let placements = if geometry::validate_layout(&local_displays, &saved.placements)
-                .is_ok()
-                && saved.host_display_ids.len() == local_displays.len()
-                && local_displays
-                    .iter()
-                    .all(|d| saved.host_display_ids.contains(&d.id))
-                && saved.placements.first().is_some_and(|p| {
-                    p.display_id == remote_displays[0].id
-                        && (p.rect.width - remote_displays[0].rect.width).abs() < 1.0
-                        && (p.rect.height - remote_displays[0].rect.height).abs() < 1.0
-                }) {
-                saved.placements
-            } else {
-                Vec::new()
-            };
-            if !placements.is_empty() {
-                self.update(|s| s.placements = placements.clone());
-                tx.try_send(Message::Layout {
-                    placements,
-                    host_displays: local_displays,
+        {
+            let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
+            if self.attempt.load(Ordering::SeqCst) != attempt_id
+                || self.shutdown.load(Ordering::SeqCst)
+            {
+                return Err("Connection cancelled".into());
+            }
+            if new_pair {
+                self.store.trust(TrustedDevice {
+                    device: Device {
+                        id: id.clone(),
+                        name: name.clone(),
+                        os: peer_os,
+                        addresses: vec![peer.ip().to_string()],
+                        port: if controller { peer.port() } else { PORT },
+                        online: true,
+                        busy: false,
+                        trusted: true,
+                        favorite: false,
+                        auto_connect: controller,
+                        last_seen: discovery::now(),
+                    },
+                    certificate: hex::encode(certificate),
+                    placements: Vec::new(),
+                    last_local_ip: Some(local_ip.clone()),
+                    host_display_ids: Vec::new(),
+                    endpoint: manual_endpoint.clone(),
+                    controller_id: None,
+                    control_from_either: true,
                 })?;
             } else {
-                self.update(|s| {
-                    s.status = "Connected · arrange displays to enable edge switching".into()
+                let mut config = self
+                    .store
+                    .config
+                    .lock()
+                    .map_err(|_| "Settings unavailable")?;
+                if let Some(d) = config.trusted.iter_mut().find(|d| d.device.id == id) {
+                    if controller {
+                        d.device.addresses.retain(|a| a != &peer.ip().to_string());
+                        d.device.addresses.insert(0, peer.ip().to_string());
+                        d.device.port = peer.port();
+                        if let Some(endpoint) = &manual_endpoint {
+                            if d.endpoint.is_none() || endpoint.parse::<SocketAddr>().is_err() {
+                                d.endpoint = Some(endpoint.clone());
+                            }
+                        }
+                        d.last_local_ip = Some(local_ip.clone());
+                    }
+                    d.device.name = name.clone();
+                    d.device.last_seen = discovery::now();
+                }
+                drop(config);
+                self.store.save()?;
+            }
+            self.initiator.store(controller, Ordering::SeqCst);
+            *self.token.lock().map_err(|_| "Control unavailable")? = ControlToken {
+                revision: 1,
+                handoff: 0,
+            };
+            self.clear_topology();
+            *self
+                .connection
+                .lock()
+                .map_err(|_| "Connection unavailable")? = Some(tx.clone());
+            let mut all = local_displays.clone();
+            all.extend(remote_displays.clone());
+            self.update(|s| {
+                s.connected_id = Some(id.clone());
+                s.controller_id = Some(if controller {
+                    s.device_id.clone()
+                } else {
+                    id.clone()
                 });
+                s.control_from_either = true;
+                s.peer_paused = false;
+                s.pairing = None;
+                s.error = None;
+                s.displays = all;
+                s.status = format!("Connected to {name}");
+            });
+            let saved = self
+                .store
+                .trusted()
+                .into_iter()
+                .find(|t| t.device.id == id)
+                .ok_or("Trust was revoked")?;
+            self.discovered(saved.device.clone());
+            self.ownership(if self.store.settings().paused {
+                Ownership::Paused
+            } else {
+                Ownership::Local
+            });
+            if controller {
+                self.apply_control_request(
+                    saved
+                        .controller_id
+                        .unwrap_or_else(|| self.store.identity.id.clone()),
+                    saved.control_from_either,
+                    &self.store.identity.id,
+                )?;
+            }
+            if self.store.settings().paused {
+                tx.try_send(Message::Pause)?;
             }
         }
         let (read, write) = tokio::io::split(stream);
@@ -1151,10 +1460,28 @@ impl Engine {
         });
         let writer = tokio::spawn(async move {
             let mut write = write;
-            while let Some(message) = outgoing.recv().await {
+            let mut pending = None;
+            while let Some(mut message) = match pending.take() {
+                Some(message) => Some(message),
+                None => outgoing.recv().await,
+            } {
+                if let Message::Input {
+                    token,
+                    event: crate::input::Input::Motion { .. },
+                    ..
+                } = &mut message
+                {
+                    let original_token = *token;
+                    while let Ok(next) = outgoing.try_recv() {
+                        if !coalesce_message(&mut message, &next, original_token) {
+                            pending = Some(next);
+                            break;
+                        }
+                    }
+                }
                 let bye = matches!(message, Message::Goodbye);
                 timeout(
-                    Duration::from_secs(1),
+                    Duration::from_secs(5),
                     protocol::write(&mut write, &message),
                 )
                 .await??;
@@ -1170,16 +1497,32 @@ impl Engine {
         let mut expected_sequence = 0;
         let mut rate_count = 0u32;
         let mut rate_start = Instant::now();
-        let result:Result<()>=async {loop {tokio::select! {
-            _=tick.tick()=>{if self.shutdown.load(Ordering::SeqCst)||self.snapshot().connected_id.as_deref()!=Some(&id){break;}
-if last.elapsed()>Duration::from_secs(1){return Err("Connection timed out; input returned locally".into());}
-if !self.store.trusted().iter().any(|t|t.device.id==id){return Err("Device trust revoked".into());}tx.try_send(Message::Heartbeat{nonce:started.elapsed().as_micros() as u64})?;},
-            message=incoming.recv()=>{
-                let message=message.ok_or("Connection closed")??;last=Instant::now();self.native.renew();rate_count+=1;if rate_start.elapsed()>=Duration::from_secs(1){rate_start=Instant::now();rate_count=0;}
-if rate_count>16000{return Err("Peer message rate exceeded".into());}
-                if !self.process_message(message,controller,&id,&tx,started,&mut expected_sequence)? { break; }
+        let result: Result<()> = async {
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if self.shutdown.load(Ordering::SeqCst) || self.snapshot().connected_id.as_deref() != Some(&id) { break; }
+                        let expired = {
+                            let safety = self.safety.lock().unwrap_or_else(|e| e.into_inner());
+                            matches!(safety.state, Ownership::Requesting | Ownership::Returning) && safety.expired()
+                        };
+                        if expired { self.return_local(); }
+                        if last.elapsed() > Duration::from_secs(5) { return Err("Connection timed out; input returned locally".into()); }
+                        if !self.store.trusted().iter().any(|t| t.device.id == id) { return Err("Device trust revoked".into()); }
+                        tx.try_send(Message::Heartbeat { nonce: started.elapsed().as_micros() as u64 })?;
+                    }
+                    message = incoming.recv() => {
+                        let message = message.ok_or("Connection closed")??;
+                        last = Instant::now();
+                        rate_count += 1;
+                        if rate_start.elapsed() >= Duration::from_secs(1) { rate_start = Instant::now(); rate_count = 0; }
+                        if rate_count > 16000 { return Err("Peer message rate exceeded".into()); }
+                        if !self.process_message(message, controller, &id, &tx, started, &mut expected_sequence)? { break; }
+                    }
+                }
             }
-        }}Ok(())}.await;
+            Ok(())
+        }.await;
         self.native.release();
         reader.abort();
         writer.abort();
@@ -1190,13 +1533,46 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
     fn process_message(
         &self,
         message: Message,
-        controller: bool,
+        _initiator: bool,
         id: &str,
         tx: &mpsc::Sender<Message>,
         started: Instant,
         expected_sequence: &mut u64,
     ) -> Result<bool> {
+        let _operation = self.operation.lock().map_err(|_| "Control unavailable")?;
+        let controller = self.is_controller();
         match message {
+            Message::ControlRequest {
+                controller_id,
+                from_either,
+            } if self.initiator.load(Ordering::SeqCst) => {
+                self.apply_control_request(controller_id, from_either, id)?;
+            }
+            Message::ControlState {
+                controller_id,
+                from_either,
+                revision,
+            } if !self.initiator.load(Ordering::SeqCst) => {
+                if revision > self.current_token().revision {
+                    self.apply_control(controller_id, from_either, revision)?;
+                }
+            }
+            Message::Topology { displays } => {
+                if displays.len() > 32
+                    || displays
+                        .iter()
+                        .any(|d| d.device_id != id || !d.rect.valid())
+                {
+                    return Err("Invalid display inventory".into());
+                }
+                self.release_control();
+                self.clear_topology();
+                self.update(|s| {
+                    s.displays.retain(|d| d.device_id != id);
+                    s.displays.extend(displays);
+                    s.status = "Displays changed · review arrangement".into();
+                });
+            }
             Message::Heartbeat { nonce } => {
                 tx.try_send(Message::Pong { nonce })?;
             }
@@ -1204,6 +1580,9 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                 let current = started.elapsed().as_micros() as u64;
                 if current >= nonce {
                     self.update(|s| s.latency_ms = Some((current - nonce) as f64 / 1000.0));
+                    if current - nonce < 750_000 {
+                        self.native.renew();
+                    }
                 }
             }
             Message::Goodbye => return Ok(false),
@@ -1221,20 +1600,22 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                     self.ownership(Ownership::Local);
                 }
             }
-            Message::Release => {
-                self.native.release();
-                self.ownership(if self.store.settings().paused {
-                    Ownership::Paused
-                } else {
-                    Ownership::Local
-                });
+            Message::Release { token } => {
+                if token == self.current_token() {
+                    self.native.release();
+                    self.ownership(self.idle_ownership());
+                }
             }
             Message::Layout {
+                revision,
                 placements,
                 host_displays,
             } if !controller => {
+                if revision != self.current_token().revision {
+                    return Ok(true);
+                }
                 self.native.release();
-                self.ownership(Ownership::Local);
+                self.ownership(self.idle_ownership());
                 if host_displays.len() > 32
                     || host_displays
                         .iter()
@@ -1249,36 +1630,58 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                         .iter()
                         .find(|p| p.display_id == edge.remote_id)
                         .ok_or("Unknown target display")?;
-                    let actual = platform::displays(&self.store.identity.id)?
+                    let actual = self
+                        .snapshot()
+                        .displays
                         .into_iter()
+                        .filter(|d| d.device_id == self.store.identity.id)
                         .find(|d| d.id == p.display_id)
-                        .ok_or("Mac display changed")?;
+                        .ok_or("Controlled display changed")?;
                     returns.push((edge, p.rect.clone(), actual.rect));
                 }
                 *self
                     .return_edges
                     .lock()
                     .map_err(|_| "Topology unavailable")? = returns;
-                self.update(|s| s.placements = placements);
+                self.update(|s| {
+                    s.placements = placements;
+                    s.displays.retain(|d| d.device_id != id);
+                    s.displays.extend(host_displays);
+                });
             }
-            Message::Configuration { settings } if !controller => {
-                let mut config = self
-                    .store
-                    .config
-                    .lock()
-                    .map_err(|_| "Settings unavailable")?;
-                settings.apply(&mut config.settings)?;
-                let settings = config.settings.clone();
-                drop(config);
-                self.store.save()?;
-                self.update(|s| s.settings = settings);
-            }
-            Message::Handoff { display_id, x, y } if !controller => {
-                if self.store.settings().paused || !x.is_finite() || !y.is_finite() {
-                    return Err("Invalid or paused handoff".into());
+            Message::Configuration { revision, settings } if !controller => {
+                if revision == self.current_token().revision {
+                    settings.apply(
+                        &mut *self
+                            .remote_settings
+                            .lock()
+                            .map_err(|_| "Settings unavailable")?,
+                    )?;
                 }
-                let display = platform::displays(&self.store.identity.id)?
+            }
+            Message::Handoff {
+                token,
+                display_id,
+                x,
+                y,
+            } if !controller => {
+                let current = self.current_token();
+                if token.revision != current.revision || token.handoff <= current.handoff {
+                    return Ok(true);
+                }
+                *self.token.lock().map_err(|_| "Control unavailable")? = token;
+                if self.snapshot().peer_paused || self.store.settings().paused {
+                    self.release_control();
+                    return Ok(true);
+                }
+                if !x.is_finite() || !y.is_finite() {
+                    return Err("Invalid handoff coordinates".into());
+                }
+                let display = self
+                    .snapshot()
+                    .displays
                     .into_iter()
+                    .filter(|d| d.device_id == self.store.identity.id)
                     .find(|d| d.id == display_id)
                     .ok_or("Display no longer available")?;
                 if x < display.rect.x
@@ -1289,14 +1692,23 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                     return Err("Handoff outside display".into());
                 }
                 self.native.warp(x, y);
-                self.native
-                    .lease(!self.store.settings().allow_local_input)?;
+                if let Err(error) = self
+                    .native
+                    .lease(!self.store.settings().allow_local_input, false)
+                {
+                    self.release_control();
+                    self.error(error.to_string());
+                    return Ok(true);
+                }
                 self.ownership(Ownership::Remote);
-                tx.try_send(Message::HandoffAck)?;
+                tx.try_send(Message::HandoffAck { token })?;
             }
-            Message::HandoffAck if controller => {
+            Message::HandoffAck { token } if controller => {
+                if token != self.current_token() {
+                    return Ok(true);
+                }
                 if self.snapshot().ownership != Ownership::Requesting {
-                    return Err("Unexpected handoff acknowledgement".into());
+                    return Ok(true);
                 }
                 if !self
                     .safety
@@ -1304,7 +1716,7 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                     .map_err(|_| "Input state unavailable")?
                     .can_handoff()
                 {
-                    self.return_local();
+                    self.release_control();
                 } else {
                     let (x, y) = self.native.cursor();
                     let snapshot = self.snapshot();
@@ -1324,11 +1736,22 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                             display.rect.y + display.rect.height / 2.0,
                         );
                     }
-                    self.native.lease(false)?;
+                    if let Err(error) = self.native.lease(false, true) {
+                        self.release_control();
+                        self.error(error.to_string());
+                        return Ok(true);
+                    }
                     self.ownership(Ownership::Remote);
                 }
             }
-            Message::Input { sequence, event } if !controller => {
+            Message::Input {
+                token,
+                sequence,
+                event,
+            } if !controller => {
+                if token != self.current_token() {
+                    return Ok(true);
+                }
                 if sequence <= *expected_sequence || !event.valid() {
                     return Err("Invalid input sequence".into());
                 }
@@ -1342,19 +1765,25 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                 {
                     return Ok(true);
                 }
-                let config = self
-                    .store
-                    .config
+                if !self.native.gate.active() {
+                    self.release_control();
+                    return Ok(true);
+                }
+                let settings = self
+                    .remote_settings
                     .lock()
                     .map_err(|_| "Settings unavailable")?;
-                self.native.inject(&event, &config.settings)?;
-                drop(config);
+                self.native.inject(&event, &settings)?;
+                drop(settings);
                 self.safety
                     .lock()
                     .map_err(|_| "Input state unavailable")?
                     .track(&event);
             }
-            Message::Return { x, y } if controller => {
+            Message::Return { token, x, y } if controller => {
+                if token != self.current_token() || self.snapshot().ownership != Ownership::Remote {
+                    return Ok(true);
+                }
                 if !x.is_finite() || !y.is_finite() {
                     return Err("Invalid return coordinates".into());
                 }
@@ -1377,19 +1806,39 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                     .lock()
                     .map_err(|_| "Edge state unavailable")? =
                     Some(("cooldown".into(), Instant::now()));
-                tx.try_send(Message::ReturnAck)?;
+                tx.try_send(Message::ReturnAck { token })?;
             }
-            Message::ReturnAck if !controller => {
+            Message::ReturnAck { token } if !controller => {
+                if token != self.current_token() {
+                    return Ok(true);
+                }
                 self.native.release();
                 self.ownership(Ownership::Local);
             }
+            Message::Input { .. }
+            | Message::Handoff { .. }
+            | Message::HandoffAck { .. }
+            | Message::Return { .. }
+            | Message::ReturnAck { .. }
+            | Message::Configuration { .. }
+            | Message::Layout { .. } => {}
             _ => return Err("Unexpected message for this device role".into()),
         }
         Ok(true)
     }
     fn native_event(&self, event: NativeEvent) {
+        let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
         match event {
             NativeEvent::Switch => {
+                if !self.is_controller() && self.snapshot().ownership == Ownership::Local {
+                    if let Err(error) = self.configure_control_inner(
+                        self.store.identity.id.clone(),
+                        self.snapshot().control_from_either,
+                    ) {
+                        self.error(error.to_string());
+                    }
+                    return;
+                }
                 if self
                     .state
                     .lock()
@@ -1397,20 +1846,32 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                     .ownership
                     == Ownership::Remote
                 {
-                    self.return_local();
+                    self.release_control();
                 } else {
                     self.switch_requested.store(true, Ordering::SeqCst);
                 }
             }
             NativeEvent::Emergency => {
                 self.native.release();
-                let _ = self.pause(true);
+                let mut settings = self.store.settings();
+                settings.paused = true;
+                let _ = self.save_settings_inner(settings);
             }
             NativeEvent::Failure(message) => {
-                self.return_local();
+                self.release_control();
                 self.error(message);
             }
-            NativeEvent::Input(input) => {
+            NativeEvent::Input {
+                event: input,
+                captured,
+                generation,
+            } => {
+                if !self.is_controller()
+                    || (captured
+                        && generation != self.native.gate.generation.load(Ordering::SeqCst))
+                {
+                    return;
+                }
                 let state = self
                     .state
                     .lock()
@@ -1422,6 +1883,7 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                     .unwrap_or_else(|e| e.into_inner())
                     .track(&input);
                 if self.switch_requested.load(Ordering::SeqCst)
+                    && !self.native.has_local_input()
                     && self
                         .safety
                         .lock()
@@ -1429,23 +1891,28 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                         .can_handoff()
                 {
                     self.switch_requested.store(false, Ordering::SeqCst);
-                    if let Err(e) = self.switch_control() {
+                    if let Err(e) = self.switch_control_inner() {
                         self.error(e.to_string());
                     }
                 }
-                if cfg!(target_os = "windows") && state == Ownership::Remote {
+                if captured
+                    && generation == self.native.gate.generation.load(Ordering::SeqCst)
+                    && self.native.gate.capturing()
+                    && state == Ownership::Remote
+                {
                     let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
                     if let Err(error) = self.send(Message::Input {
+                        token: self.current_token(),
                         sequence,
                         event: input,
                     }) {
-                        self.return_local();
+                        self.release_control();
                         self.error(error.to_string());
                     }
                 }
             }
             NativeEvent::Position(x, y) => {
-                if cfg!(target_os = "windows") {
+                if self.is_controller() {
                     self.host_position(x, y);
                 } else {
                     self.mac_position(x, y);
@@ -1454,6 +1921,20 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
         }
     }
     fn host_position(&self, x: f64, y: f64) {
+        if !self.is_controller() {
+            return;
+        }
+        let hit = self
+            .host_edges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|e| e.hit(x, y))
+            .cloned();
+        if hit.is_none() {
+            *self.edge_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            return;
+        }
         let s = self.snapshot();
         if s.ownership != Ownership::Local
             || s.settings.paused
@@ -1471,15 +1952,6 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
         {
             return;
         }
-        let local = s
-            .displays
-            .iter()
-            .filter(|d| d.device_id == s.device_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        let hit = geometry::edges(&local, &s.placements)
-            .into_iter()
-            .find(|e| e.hit(x, y));
         let mut since = self.edge_since.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((id, time)) = &*since {
             if id == "cooldown" && time.elapsed() < Duration::from_millis(350) {
@@ -1512,16 +1984,26 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
         let (tx, ty) = edge.entry(edge.fraction(x, y), &placement.rect, &target.rect);
         self.ownership(Ownership::Requesting);
         if let Err(e) = self.send(Message::Handoff {
+            token: self.next_handoff(),
             display_id: target.id.clone(),
             x: tx,
             y: ty,
         }) {
-            self.return_local();
+            self.release_control();
             self.error(e.to_string());
         }
         *since = None;
     }
     fn mac_position(&self, x: f64, y: f64) {
+        if self.is_controller()
+            || self
+                .remote_settings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .hotkey_only
+        {
+            return;
+        }
         if self
             .state
             .lock()
@@ -1559,7 +2041,11 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                 };
                 self.native.release();
                 self.ownership(Ownership::Returning);
-                let _ = self.send(Message::Return { x: rx, y: ry });
+                let _ = self.send(Message::Return {
+                    token: self.current_token(),
+                    x: rx,
+                    y: ry,
+                });
                 break;
             }
         }
@@ -1569,6 +2055,7 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
         let mut retry = Instant::now() - Duration::from_secs(5);
         let mut retry_delay = Duration::from_secs(2);
         let mut previous_displays = String::new();
+        let mut previous_addresses = String::new();
         loop {
             tick.tick().await;
             if self.shutdown.load(Ordering::SeqCst) {
@@ -1579,29 +2066,40 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
             if (!permissions.accessibility || !permissions.monitoring) && self.native.gate.active()
             {
                 self.return_local();
-                self.error("Mac input permission was revoked".into());
+                self.error("Native input permission was revoked".into());
             }
             let displays = platform::displays(&self.store.identity.id).unwrap_or_default();
             let topology = serde_json::to_string(&displays).unwrap_or_default();
             if !previous_displays.is_empty() && previous_displays != topology {
-                self.return_local();
+                let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
+                self.release_control();
+                self.clear_topology();
+                let _ = self.send(Message::Topology {
+                    displays: displays.clone(),
+                });
                 self.update(|s| {
                     s.placements.clear();
                     s.status = "Displays changed · review arrangement".into();
                 });
             }
             previous_displays = topology;
+            let addresses = discovery::addresses();
+            let address_key = serde_json::to_string(&addresses).unwrap_or_default();
+            if !previous_addresses.is_empty() && address_key != previous_addresses {
+                retry = Instant::now() - Duration::from_secs(5);
+                retry_delay = Duration::from_secs(2);
+            }
+            previous_addresses = address_key;
             self.update(|s| {
                 s.permissions = permissions;
-                s.addresses = discovery::addresses();
+                s.addresses = addresses;
                 s.displays.retain(|d| d.device_id != s.device_id);
                 s.displays.extend(displays);
             });
             if self.snapshot().connected_id.is_some() {
                 retry_delay = Duration::from_secs(2);
             }
-            if cfg!(target_os = "windows")
-                && !self.busy.load(Ordering::SeqCst)
+            if !self.busy.load(Ordering::SeqCst)
                 && !self.reconnect_suspended.load(Ordering::SeqCst)
                 && !self.store.settings().paused
                 && retry.elapsed() > retry_delay
@@ -1611,23 +2109,32 @@ if rate_count>16000{return Err("Peer message rate exceeded".into());}
                 let mut devices = self.store.trusted();
                 devices
                     .sort_by_key(|d| (!d.device.favorite, std::cmp::Reverse(d.device.last_seen)));
-                if let Some(device) = devices.into_iter().find(|d| d.device.auto_connect) {
+                devices.retain(|d| d.device.auto_connect);
+                if !devices.is_empty() {
+                    let index = (self.attempt.load(Ordering::SeqCst) as usize) % devices.len();
+                    let device = devices.remove(index);
+                    let saved_endpoint = device.endpoint.clone();
                     let live = self
                         .snapshot()
                         .devices
                         .into_iter()
                         .find(|d| d.id == device.device.id && d.online)
                         .unwrap_or(device.device);
-                    if let Some(address) = live.addresses.first() {
-                        let _ = self.connect(if address.contains(':') {
-                            format!("[{}]:{}", address, live.port)
-                        } else {
-                            format!("{}:{}", address, live.port)
-                        });
+                    if let Some(address) = saved_endpoint
+                        .or_else(|| live.addresses.first().map(|a| endpoint(a, live.port)))
+                    {
+                        let _ = self.connect(address);
                     }
                 }
             }
         }
+    }
+}
+fn endpoint(ip: &str, port: u16) -> String {
+    if ip.contains(':') {
+        format!("[{ip}]:{port}")
+    } else {
+        format!("{ip}:{port}")
     }
 }
 pub fn normalize_address(address: &str) -> Result<String> {
@@ -1672,4 +2179,56 @@ mod tests {
         assert!(normalize_address("https://host").is_err());
         assert!(normalize_address("host:0").is_err());
     }
+}
+
+fn coalesce_message(current: &mut Message, next: &Message, token: ControlToken) -> bool {
+    if let (
+        Message::Input {
+            sequence, event, ..
+        },
+        Message::Input {
+            token: next_token,
+            sequence: next_sequence,
+            event: next_event,
+        },
+    ) = (current, next)
+    {
+        if *next_token == token && event.merge_motion(next_event) {
+            *sequence = *next_sequence;
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod recovery_tests;
+
+async fn connect_routes(routes: Vec<(SocketAddr, Option<SocketAddr>)>) -> Result<TcpStream> {
+    let mut attempts = tokio::task::JoinSet::new();
+    for (index, (endpoint, local)) in routes.into_iter().take(32).enumerate() {
+        attempts.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(index as u64 * 75)).await;
+            timeout(Duration::from_secs(2), async move {
+                let socket = if endpoint.is_ipv4() {
+                    tokio::net::TcpSocket::new_v4()?
+                } else {
+                    tokio::net::TcpSocket::new_v6()?
+                };
+                if let Some(local) = local {
+                    socket.bind(local)?;
+                }
+                socket.connect(endpoint).await
+            })
+            .await
+        });
+    }
+    while let Some(result) = attempts.join_next().await {
+        if let Ok(Ok(Ok(stream))) = result {
+            attempts.abort_all();
+            return Ok(stream);
+        }
+    }
+    Err("Device unreachable. Check its IP address, TCP port 47831, and LAN/VPN access".into())
 }

@@ -113,16 +113,32 @@ pub fn overlaps(a: &Rect, b: &Rect) -> bool {
 }
 pub fn validate_layout(local: &[Display], remote: &[Placement]) -> std::result::Result<(), String> {
     if remote.len() != 1 || !remote[0].rect.valid() {
-        return Err("Place one Mac display beside your Windows displays".into());
+        return Err("Place a controlled display beside the main device displays".into());
     }
     if local.iter().any(|d| overlaps(&d.rect, &remote[0].rect)) {
         return Err("Displays cannot overlap".into());
     }
     if edges(local, remote).is_empty() {
-        return Err("Snap the Mac to a shared edge of a Windows display".into());
+        return Err("Snap the controlled display to a shared edge of a main display".into());
     }
     Ok(())
 }
+pub fn clamp_point(x: f64, y: f64, displays: &[Rect]) -> (f64, f64) {
+    displays
+        .iter()
+        .map(|r| {
+            (
+                x.clamp(r.x, r.right() - 1.0),
+                y.clamp(r.y, r.bottom() - 1.0),
+            )
+        })
+        .min_by(|a, b| {
+            ((a.0 - x).powi(2) + (a.1 - y).powi(2))
+                .total_cmp(&((b.0 - x).powi(2) + (b.1 - y).powi(2)))
+        })
+        .unwrap_or((x, y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +216,26 @@ mod tests {
         let e = edges(&[d], &[p]);
         assert_eq!(e[0].side, Side::Top);
         assert!(e[0].hit(-500.0, 0.0));
+    }
+    #[test]
+    fn cursor_clamps_to_monitors_without_losing_fractional_position() {
+        let bounds = [
+            Rect {
+                x: -1000.0,
+                y: 0.0,
+                width: 900.0,
+                height: 800.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 800.0,
+            },
+        ];
+        assert_eq!(clamp_point(0.25, 4.75, &bounds), (0.25, 4.75));
+        assert_eq!(clamp_point(-30.0, 20.0, &bounds), (0.0, 20.0));
+        assert_eq!(clamp_point(1100.0, 900.0, &bounds), (999.0, 799.0));
     }
     #[test]
     fn overlap_rejected() {

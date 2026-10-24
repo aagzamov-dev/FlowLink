@@ -1,6 +1,6 @@
 use super::Gate;
 use crate::{
-    input::{ClickTracker, Input, KeyMapper, NativeEvent},
+    input::{ClickTracker, Input, NativeEvent, ScrollAccumulator, ShortcutMapper},
     model::{Display, Permissions, Rect, Settings},
     Result,
 };
@@ -65,6 +65,7 @@ extern "C" {
     fn CGEventGetLocation(event: Event) -> Point;
     fn CGEventGetIntegerValueField(event: Event, field: u32) -> i64;
     fn CGEventSetIntegerValueField(event: Event, field: u32, value: i64);
+    fn CGEventSetLocation(event: Event, point: Point);
     fn CGEventGetFlags(event: Event) -> u64;
     fn CGEventSetFlags(event: Event, flags: u64);
     fn CGEventPost(tap: u32, event: Event);
@@ -106,18 +107,41 @@ extern "C" {
 }
 struct TapContext {
     gate: Arc<Gate>,
+    tap: std::sync::atomic::AtomicPtr<c_void>,
     local_keys: [AtomicBool; 128],
+    physical_keys: [AtomicBool; 128],
+    physical_buttons: [AtomicBool; 5],
+    cursor_x: std::sync::atomic::AtomicU64,
+    cursor_y: std::sync::atomic::AtomicU64,
     local_buttons: [AtomicBool; 5],
     local_flags: std::sync::atomic::AtomicU64,
     remote_keys: [AtomicBool; 128],
     remote_buttons: [AtomicBool; 5],
 }
+impl TapContext {
+    fn new(gate: Arc<Gate>) -> Self {
+        Self {
+            gate,
+            tap: std::sync::atomic::AtomicPtr::new(ptr::null_mut()),
+            local_keys: std::array::from_fn(|_| AtomicBool::new(false)),
+            physical_keys: std::array::from_fn(|_| AtomicBool::new(false)),
+            physical_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
+            cursor_x: std::sync::atomic::AtomicU64::new(0),
+            cursor_y: std::sync::atomic::AtomicU64::new(0),
+            local_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
+            local_flags: std::sync::atomic::AtomicU64::new(0),
+            remote_keys: std::array::from_fn(|_| AtomicBool::new(false)),
+            remote_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
+        }
+    }
+}
 struct Injection {
-    mapper: KeyMapper,
+    bounds: Vec<Rect>,
+    mapper: ShortcutMapper,
+    scroll: ScrollAccumulator,
     keys: HashSet<u16>,
     buttons: HashSet<u8>,
-    command_keys: HashSet<u16>,
-    language_switch: bool,
+
     clicks: ClickTracker,
 }
 pub struct Mac {
@@ -126,14 +150,7 @@ pub struct Mac {
 }
 impl Mac {
     pub fn start(gate: Arc<Gate>) -> Result<Self> {
-        let context = Arc::new(TapContext {
-            gate,
-            local_keys: std::array::from_fn(|_| AtomicBool::new(false)),
-            local_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
-            local_flags: std::sync::atomic::AtomicU64::new(0),
-            remote_keys: std::array::from_fn(|_| AtomicBool::new(false)),
-            remote_buttons: std::array::from_fn(|_| AtomicBool::new(false)),
-        });
+        let context = Arc::new(TapContext::new(gate));
         let ctx = context.clone();
         std::thread::Builder::new()
             .name("flowlink-mac-events".into())
@@ -150,6 +167,7 @@ impl Mac {
                     ));
                     return;
                 }
+                ctx.tap.store(tap, Ordering::SeqCst);
                 let source = CFMachPortCreateRunLoopSource(ptr::null(), tap, 0);
                 if source.is_null() {
                     ctx.gate.healthy.store(false, Ordering::SeqCst);
@@ -168,11 +186,12 @@ impl Mac {
         Ok(Self {
             context,
             injection: Mutex::new(Injection {
-                mapper: KeyMapper::default(),
+                bounds: Vec::new(),
+                mapper: ShortcutMapper::default(),
+                scroll: ScrollAccumulator::default(),
                 keys: HashSet::new(),
                 buttons: HashSet::new(),
-                command_keys: HashSet::new(),
-                language_switch: false,
+
                 clicks: ClickTracker::default(),
             }),
         })
@@ -188,7 +207,23 @@ impl Mac {
             (p.x, p.y)
         }
     }
+    pub fn has_local_input(&self) -> bool {
+        self.context
+            .physical_keys
+            .iter()
+            .chain(self.context.physical_buttons.iter())
+            .any(|key| key.load(Ordering::SeqCst))
+    }
     pub fn warp(&self, x: f64, y: f64) {
+        if let Ok(mut state) = self.injection.lock() {
+            state.bounds = displays("")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.rect)
+                .collect();
+        }
+        self.context.cursor_x.store(x.to_bits(), Ordering::SeqCst);
+        self.context.cursor_y.store(y.to_bits(), Ordering::SeqCst);
         unsafe {
             CGWarpMouseCursorPosition(Point { x, y });
         }
@@ -200,12 +235,17 @@ impl Mac {
             .map_err(|_| "Input state unavailable")?;
         match event {
             Input::Motion { dx, dy } => {
-                let (x, y) = self.cursor();
-                let p = Point {
-                    x: x + dx * settings.pointer_speed,
-                    y: y + dy * settings.pointer_speed,
-                };
-                let held = state.buttons.iter().next().copied();
+                let x = f64::from_bits(self.context.cursor_x.load(Ordering::SeqCst));
+                let y = f64::from_bits(self.context.cursor_y.load(Ordering::SeqCst));
+                let (x, y) = crate::geometry::clamp_point(
+                    x + dx * settings.pointer_speed,
+                    y + dy * settings.pointer_speed,
+                    &state.bounds,
+                );
+                let p = Point { x, y };
+                self.context.cursor_x.store(p.x.to_bits(), Ordering::SeqCst);
+                self.context.cursor_y.store(p.y.to_bits(), Ordering::SeqCst);
+                let held = state.buttons.iter().min().copied();
                 let kind = match held {
                     Some(0) => 6,
                     Some(1) => 7,
@@ -229,7 +269,8 @@ impl Mac {
                         return Ok(());
                     }
                 }
-                let (x, y) = self.cursor();
+                let x = f64::from_bits(self.context.cursor_x.load(Ordering::SeqCst));
+                let y = f64::from_bits(self.context.cursor_y.load(Ordering::SeqCst));
                 let (kind, number) = match button {
                     0 => (if *down { 1 } else { 2 }, 0),
                     1 => (if *down { 3 } else { 4 }, 1),
@@ -253,69 +294,76 @@ impl Mac {
                     post(event, self.flags(&state));
                 }
             }
-            Input::Scroll { x, y } => {
+            Input::Scroll {
+                x,
+                y,
+                phase,
+                momentum,
+            } => {
                 let direction = if settings.reverse_scroll { -1.0 } else { 1.0 };
-                unsafe {
-                    post(
-                        CGEventCreateScrollWheelEvent(
-                            ptr::null(),
-                            0,
-                            2,
-                            (y * direction) as i32,
-                            (x * direction) as i32,
-                        ),
-                        self.flags(&state),
-                    );
+                let (sx, sy) = state.scroll.take(x * direction, y * direction);
+                if sx != 0 || sy != 0 || *phase != 0 || *momentum != 0 {
+                    unsafe {
+                        let event = CGEventCreateScrollWheelEvent(ptr::null(), 0, 2, sy, sx);
+                        if !event.is_null() {
+                            CGEventSetIntegerValueField(event, 99, *phase as i64);
+                            CGEventSetIntegerValueField(event, 123, *momentum as i64);
+                            CGEventSetLocation(
+                                event,
+                                Point {
+                                    x: f64::from_bits(self.context.cursor_x.load(Ordering::SeqCst)),
+                                    y: f64::from_bits(self.context.cursor_y.load(Ordering::SeqCst)),
+                                },
+                            );
+                        }
+                        post(event, self.flags(&state));
+                    }
                 }
             }
             Input::Key { scan, down } => {
-                if settings.language_switch == "winSpace"
-                    && *scan == 0x39
-                    && (state.keys.contains(&0x15b)
-                        || state.keys.contains(&0x15c)
-                        || state.language_switch)
-                {
-                    if *down {
-                        state.language_switch = true;
-                        unsafe {
-                            post(CGEventCreateKeyboardEvent(ptr::null(), 49, true), CTRL);
-                            post(CGEventCreateKeyboardEvent(ptr::null(), 49, false), CTRL);
-                        }
+                let terminal = *down
+                    && !state.keys.contains(scan)
+                    && settings
+                        .shortcuts
+                        .iter()
+                        .any(|rule| rule.scan_code == *scan)
+                    && foreground_app().is_some_and(|app| settings.terminal_apps.contains(&app));
+                let mapped = state.mapper.map(
+                    *scan,
+                    *down,
+                    settings,
+                    crate::model::Direction::WindowsToMac,
+                    terminal,
+                );
+                for key in mapped {
+                    let Input::Key { scan, down } = key else {
+                        continue;
+                    };
+                    let Some(mac) = mac_key(scan) else {
+                        continue;
+                    };
+                    self.context.remote_keys[mac as usize].store(down, Ordering::SeqCst);
+                    let repeating = down && state.keys.contains(&scan);
+                    if scan == 0x3a && down && !repeating {
+                        self.context
+                            .local_flags
+                            .fetch_xor(1 << 16, Ordering::SeqCst);
+                    }
+                    if down {
+                        state.keys.insert(scan);
                     } else {
-                        state.language_switch = false;
+                        state.keys.remove(&scan);
+                        if self.context.local_keys[mac as usize].load(Ordering::SeqCst) {
+                            continue;
+                        }
                     }
-                    return Ok(());
-                }
-                let terminal =
-                    foreground_app().is_some_and(|app| settings.terminal_apps.contains(&app));
-                let mapped = state.mapper.map(*scan, *down, settings, terminal);
-                let Some(mac) = mac_key(*scan) else {
-                    return Ok(());
-                };
-                self.context.remote_keys[mac as usize].store(*down, Ordering::SeqCst);
-                let repeating = *down && state.keys.contains(scan);
-                if *down {
-                    state.keys.insert(*scan);
-                    if mapped.command {
-                        state.command_keys.insert(*scan);
+                    unsafe {
+                        let event = CGEventCreateKeyboardEvent(ptr::null(), mac, down);
+                        if !event.is_null() {
+                            CGEventSetIntegerValueField(event, 8, repeating as i64);
+                        }
+                        post(event, self.flags(&state));
                     }
-                } else {
-                    state.keys.remove(scan);
-                    state.command_keys.remove(scan);
-                    if self.context.local_keys[mac as usize].load(Ordering::SeqCst) {
-                        return Ok(());
-                    }
-                }
-                let mut flags = self.flags(&state);
-                if mapped.command {
-                    flags = (flags & !CTRL) | CMD;
-                }
-                unsafe {
-                    let event = CGEventCreateKeyboardEvent(ptr::null(), mac, *down);
-                    if !event.is_null() {
-                        CGEventSetIntegerValueField(event, 8, repeating as i64);
-                    }
-                    post(event, flags);
                 }
             }
         }
@@ -367,9 +415,8 @@ impl Mac {
                     }
                 }
             }
-            s.mapper.release_all();
-            s.command_keys.clear();
-            s.language_switch = false;
+            s.mapper.clear();
+            s.scroll = ScrollAccumulator::default();
             for key in &self.context.remote_keys {
                 key.store(false, Ordering::SeqCst);
             }
@@ -391,67 +438,169 @@ unsafe extern "C" fn callback(_: *mut c_void, kind: u32, event: Event, user: *mu
     let ctx = &*(user as *const TapContext);
     if kind == 0xfffffffe || kind == 0xffffffff {
         ctx.gate.stop();
-        ctx.gate.healthy.store(false, Ordering::SeqCst);
-        ctx.gate.push(NativeEvent::Failure(
-            "macOS disabled input filtering; restart FlowLink to recover".into(),
-        ));
+        let tap = ctx.tap.load(Ordering::SeqCst);
+        let enabled = if kind == 0xfffffffe && !tap.is_null() {
+            CGEventTapEnable(tap, true);
+            CGEventTapIsEnabled(tap)
+        } else {
+            false
+        };
+        ctx.gate.healthy.store(enabled, Ordering::SeqCst);
+        ctx.gate.fault.store(true, Ordering::SeqCst);
         return event;
     }
     let synthetic = CGEventGetIntegerValueField(event, 42) == TAG;
-    if !synthetic {
-        let flags = CGEventGetFlags(event);
-
-        let key = CGEventGetIntegerValueField(event, 9) as usize;
-        if kind == 10
-            && key
-                == if ctx.gate.emergency_key.load(Ordering::SeqCst) == 1 {
-                    53
-                } else {
-                    111
-                }
-            && flags & (SHIFT | CTRL | ALT) == SHIFT | CTRL | ALT
-        {
+    if synthetic {
+        if ctx.gate.active() && !ctx.gate.capturing() && matches!(kind, 5 | 6 | 7 | 27) {
+            let p = CGEventGetLocation(event);
+            ctx.gate.push(NativeEvent::Position(p.x, p.y));
+        }
+        return event;
+    }
+    let flags = CGEventGetFlags(event);
+    let key = CGEventGetIntegerValueField(event, 9) as usize;
+    let button = CGEventGetIntegerValueField(event, 3) as usize;
+    let generation = ctx.gate.generation.load(Ordering::SeqCst);
+    let captured = ctx.gate.capturing();
+    let blocked = captured || (ctx.gate.active() && ctx.gate.block_local.load(Ordering::SeqCst));
+    let mut input = None;
+    if matches!(kind, 10..=12) && key < 128 {
+        let down = if kind == 12 {
+            let mask = match key {
+                56 | 60 => SHIFT,
+                59 | 62 => CTRL,
+                58 | 61 => ALT,
+                55 | 54 => CMD,
+                57 => 1 << 16,
+                _ => 0,
+            };
+            if key == 57 {
+                flags & mask != 0
+            } else {
+                flags & mask != 0 && !ctx.physical_keys[key].load(Ordering::SeqCst)
+            }
+        } else {
+            kind == 10
+        };
+        ctx.physical_keys[key].store(down && key != 57, Ordering::SeqCst);
+        if !blocked || !down {
+            ctx.local_keys[key].store(down, Ordering::SeqCst);
+        }
+        let emergency = if ctx.gate.emergency_key.load(Ordering::SeqCst) == 1 {
+            53
+        } else {
+            111
+        };
+        if down && key == emergency && flags & (SHIFT | CTRL | ALT) == SHIFT | CTRL | ALT {
             ctx.gate.stop();
             ctx.gate.push(NativeEvent::Emergency);
             return ptr::null_mut();
         }
-        let button = CGEventGetIntegerValueField(event, 3) as usize;
-        if ctx.gate.active() && ctx.gate.block_local.load(Ordering::SeqCst) {
+        if down && key == 124 && flags & (SHIFT | CTRL | ALT) == SHIFT | CTRL | ALT {
+            ctx.gate.push(NativeEvent::Switch);
             return ptr::null_mut();
         }
-        ctx.local_flags.store(flags, Ordering::SeqCst);
-        if (kind == 10 || kind == 11 || kind == 12) && key < 128 {
-            let down = if kind == 12 {
-                match key {
-                    56 | 60 => flags & SHIFT != 0,
-                    59 | 62 => flags & CTRL != 0,
-                    58 | 61 => flags & ALT != 0,
-                    55 | 54 => flags & CMD != 0,
-                    _ => false,
-                }
+        if let Some(scan) = pc_key(key as u16) {
+            if key == 57 {
+                ctx.gate.push(NativeEvent::Input {
+                    generation,
+                    event: Input::Key { scan, down: true },
+                    captured,
+                });
+                input = Some(Input::Key { scan, down: false });
             } else {
-                kind == 10
-            };
-            ctx.local_keys[key].store(down, Ordering::SeqCst);
+                input = Some(Input::Key { scan, down });
+            }
         }
-        if button < 5 && matches!(kind, 1 | 2 | 3 | 4 | 25 | 26) {
-            ctx.local_buttons[button].store(matches!(kind, 1 | 3 | 25), Ordering::SeqCst);
+    } else if button < 5 && matches!(kind, 1 | 2 | 3 | 4 | 25 | 26) {
+        let down = matches!(kind, 1 | 3 | 25);
+        ctx.physical_buttons[button].store(down, Ordering::SeqCst);
+        if !blocked || !down {
+            ctx.local_buttons[button].store(down, Ordering::SeqCst);
         }
-
-        if ctx.gate.active()
-            && ((kind == 11 && key < 128 && ctx.remote_keys[key].load(Ordering::SeqCst))
-                || (matches!(kind, 2 | 4 | 26)
-                    && button < 5
-                    && ctx.remote_buttons[button].load(Ordering::SeqCst)))
-        {
-            return ptr::null_mut();
+        input = Some(Input::Button {
+            button: button as u8,
+            down,
+        });
+    } else if kind == 22 {
+        let continuous = CGEventGetIntegerValueField(event, 88) != 0;
+        let (x, y) = if continuous {
+            (
+                CGEventGetIntegerValueField(event, 97) as f64,
+                CGEventGetIntegerValueField(event, 96) as f64,
+            )
+        } else {
+            (
+                CGEventGetIntegerValueField(event, 12) as f64 * 40.0,
+                CGEventGetIntegerValueField(event, 11) as f64 * 40.0,
+            )
+        };
+        input = Some(Input::Scroll {
+            x,
+            y,
+            phase: CGEventGetIntegerValueField(event, 99) as u8,
+            momentum: CGEventGetIntegerValueField(event, 123) as u8,
+        });
+    } else if matches!(kind, 5 | 6 | 7 | 27) {
+        if captured {
+            input = Some(Input::Motion {
+                dx: CGEventGetIntegerValueField(event, 4) as f64,
+                dy: CGEventGetIntegerValueField(event, 5) as f64,
+            });
+        } else {
+            let p = CGEventGetLocation(event);
+            if !blocked {
+                ctx.cursor_x.store(p.x.to_bits(), Ordering::SeqCst);
+                ctx.cursor_y.store(p.y.to_bits(), Ordering::SeqCst);
+            }
+            if !ctx.gate.active() {
+                ctx.gate.push(NativeEvent::Position(p.x, p.y));
+            }
         }
     }
-    if synthetic && ctx.gate.active() && matches!(kind, 5 | 6 | 7 | 27) {
-        let p = CGEventGetLocation(event);
-        ctx.gate.push(NativeEvent::Position(p.x, p.y));
+    let mut local_flags = flags & !(SHIFT | CTRL | ALT | CMD);
+    for (keys, flag) in [
+        ([56, 60], SHIFT),
+        ([59, 62], CTRL),
+        ([58, 61], ALT),
+        ([55, 54], CMD),
+    ] {
+        if keys
+            .iter()
+            .any(|&key| ctx.local_keys[key].load(Ordering::SeqCst))
+        {
+            local_flags |= flag;
+        }
+    }
+    ctx.local_flags.store(local_flags, Ordering::SeqCst);
+    if let Some(event) = input {
+        ctx.gate.push(NativeEvent::Input {
+            generation,
+            event,
+            captured,
+        });
+    }
+    if blocked {
+        return ptr::null_mut();
+    }
+    if ctx.gate.active()
+        && ((kind == 11 && key < 128 && ctx.remote_keys[key].load(Ordering::SeqCst))
+            || (matches!(kind, 2 | 4 | 26)
+                && button < 5
+                && ctx.remote_buttons[button].load(Ordering::SeqCst)))
+    {
+        return ptr::null_mut();
     }
     event
+}
+fn pc_key(key: u16) -> Option<u16> {
+    static KEYS: std::sync::OnceLock<[Option<u16>; 128]> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        std::array::from_fn(|key| (1..=0x1ff).find(|scan| mac_key(*scan) == Some(key as u16)))
+    })
+    .get(key as usize)
+    .copied()
+    .flatten()
 }
 pub fn permissions() -> Permissions {
     unsafe {
@@ -705,5 +854,46 @@ pub fn interface_kind(name: &str) -> String {
         }
         CFRelease(interfaces);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn blocking_local_input_still_tracks_modifier_release() {
+        let native = crate::platform::Native::for_test();
+        let context = TapContext::new(native.gate.clone());
+        context.local_keys[56].store(true, Ordering::SeqCst);
+        context.physical_keys[56].store(true, Ordering::SeqCst);
+        context.local_flags.store(SHIFT, Ordering::SeqCst);
+        context.gate.remote.store(true, Ordering::SeqCst);
+        context.gate.block_local.store(true, Ordering::SeqCst);
+        context
+            .gate
+            .deadline
+            .store(crate::platform::clock() + 1000, Ordering::SeqCst);
+        unsafe {
+            let event = CGEventCreateKeyboardEvent(ptr::null(), 56, false);
+            assert!(!event.is_null());
+            CGEventSetFlags(event, 0);
+            assert!(callback(
+                ptr::null_mut(),
+                12,
+                event,
+                &context as *const _ as *mut c_void
+            )
+            .is_null());
+            CFRelease(event);
+        }
+        assert!(!context.local_keys[56].load(Ordering::SeqCst));
+        assert!(!context.physical_keys[56].load(Ordering::SeqCst));
+        assert_eq!(context.local_flags.load(Ordering::SeqCst) & SHIFT, 0);
+    }
+    #[test]
+    fn keyboard_translation_roundtrips_supported_keys() {
+        for scan in [0x1d, 0x11d, 0x2e, 0x15b, 0x15c, 0x14d, 0x1c, 0x11c] {
+            assert_eq!(pc_key(mac_key(scan).unwrap()), Some(scan));
+        }
     }
 }

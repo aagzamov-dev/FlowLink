@@ -130,7 +130,7 @@ pub fn client(id: &Identity, peer: Vec<u8>) -> Result<Arc<rustls::ClientConfig>>
     .dangerous()
     .with_custom_certificate_verifier(Arc::new(Pin(peer)))
     .with_client_auth_cert(c, k)?;
-    cfg.alpn_protocols = vec![b"flowlink/1".to_vec()];
+    cfg.alpn_protocols = vec![b"flowlink/2".to_vec()];
     Ok(Arc::new(cfg))
 }
 pub fn server(id: &Identity, peer: Vec<u8>) -> Result<Arc<rustls::ServerConfig>> {
@@ -141,7 +141,7 @@ pub fn server(id: &Identity, peer: Vec<u8>) -> Result<Arc<rustls::ServerConfig>>
     .with_protocol_versions(&[&rustls::version::TLS13])?
     .with_client_cert_verifier(Arc::new(Pin(peer)))
     .with_single_cert(c, k)?;
-    cfg.alpn_protocols = vec![b"flowlink/1".to_vec()];
+    cfg.alpn_protocols = vec![b"flowlink/2".to_vec()];
     Ok(Arc::new(cfg))
 }
 

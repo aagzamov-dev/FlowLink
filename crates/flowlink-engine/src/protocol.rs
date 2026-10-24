@@ -48,6 +48,12 @@ pub enum PairMessage {
         reason: String,
     },
 }
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ControlToken {
+    pub revision: u64,
+    pub handoff: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Message {
@@ -55,26 +61,48 @@ pub enum Message {
         device_id: String,
         name: String,
         displays: Vec<Display>,
+        os: String,
+    },
+    ControlRequest {
+        controller_id: String,
+        from_either: bool,
+    },
+    ControlState {
+        controller_id: String,
+        from_either: bool,
+        revision: u64,
+    },
+    Topology {
+        displays: Vec<Display>,
     },
     Layout {
+        revision: u64,
         placements: Vec<Placement>,
         host_displays: Vec<Display>,
     },
     Configuration {
+        revision: u64,
         settings: InputSettings,
     },
     Handoff {
+        token: ControlToken,
         display_id: String,
         x: f64,
         y: f64,
     },
-    HandoffAck,
+    HandoffAck {
+        token: ControlToken,
+    },
     Return {
+        token: ControlToken,
         x: f64,
         y: f64,
     },
-    ReturnAck,
+    ReturnAck {
+        token: ControlToken,
+    },
     Input {
+        token: ControlToken,
         sequence: u64,
         event: Input,
     },
@@ -84,7 +112,9 @@ pub enum Message {
     Pong {
         nonce: u64,
     },
-    Release,
+    Release {
+        token: ControlToken,
+    },
     Pause,
     Resume,
     Goodbye,
@@ -107,8 +137,10 @@ pub async fn write<T: Serialize>(
     if data.is_empty() || data.len() > MAX_FRAME {
         return Err("Protocol message exceeds size limit".into());
     }
-    stream.write_u32(data.len() as u32).await?;
-    stream.write_all(&data).await?;
+    let mut frame = Vec::with_capacity(4 + data.len());
+    frame.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&data);
+    stream.write_all(&frame).await?;
     stream.flush().await?;
     Ok(())
 }

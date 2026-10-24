@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FlowLink",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "app.flowlink.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -51,6 +51,24 @@
       "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist",
       "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg0QzJBM0E3N0E3MkFGQTcKUldTbnIzSjZwNlBDaEc3Y3ZjblZlK01GZ21WeG5lMHcxMlcxUUw5OWthdDRyY0xsM0wyZWF2bE4K",
+      "endpoints": [
+        "https://github.com/aagzamov-dev/FlowLink/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

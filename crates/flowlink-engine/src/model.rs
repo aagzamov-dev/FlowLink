@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const PORT: u16 = 47831;
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +28,23 @@ pub struct Shortcut {
     pub command: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Direction {
+    WindowsToMac,
+    MacToWindows,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShortcutBinding {
+    pub direction: Direction,
+    pub source_key: u16,
+    pub source_modifiers: u8,
+    pub target_key: u16,
+    pub target_modifiers: u8,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
@@ -42,8 +59,12 @@ pub struct Settings {
     pub hotkey_only: bool,
     pub terminal_apps: Vec<String>,
     pub shortcuts: Vec<Shortcut>,
+    #[serde(default)]
+    pub bindings: Vec<ShortcutBinding>,
     pub interface: Option<String>,
     pub diagnostics: bool,
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check_updates: bool,
     pub emergency_key: u16,
     pub language_switch: String,
 }
@@ -69,12 +90,17 @@ impl Default for Settings {
                     command: true,
                 })
                 .collect(),
+            bindings: Vec::new(),
             interface: None,
             diagnostics: false,
+            auto_check_updates: true,
             emergency_key: 1,
             language_switch: "winSpace".into(),
         }
     }
+}
+fn default_auto_check_updates() -> bool {
+    true
 }
 impl Settings {
     pub fn validate(&self) -> std::result::Result<(), String> {
@@ -104,6 +130,30 @@ impl Settings {
             || self.shortcuts.len() > 64
         {
             return Err("Too many shortcut rules".into());
+        }
+        if self.bindings.len() > 64
+            || self.bindings.iter().any(|b| {
+                b.source_key == 0
+                    || b.source_key > 0x1ff
+                    || b.target_key == 0
+                    || b.target_key > 0x1ff
+                    || crate::input::modifier(b.source_key) != 0
+                    || crate::input::modifier(b.target_key) != 0
+                    || b.source_modifiers > 15
+                    || b.target_modifiers > 15
+                    || (b.source_modifiers == 7 && [0x14d, 1, 0x58].contains(&b.source_key))
+            })
+        {
+            return Err("Invalid shortcut binding".into());
+        }
+        for (index, binding) in self.bindings.iter().enumerate() {
+            if self.bindings[..index].iter().any(|b| {
+                b.direction == binding.direction
+                    && b.source_key == binding.source_key
+                    && b.source_modifiers == binding.source_modifiers
+            }) {
+                return Err("Each source shortcut must be unique in its direction".into());
+            }
         }
         Ok(())
     }
@@ -184,6 +234,12 @@ pub struct TrustedDevice {
     pub last_local_ip: Option<String>,
     #[serde(default)]
     pub host_display_ids: Vec<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub controller_id: Option<String>,
+    #[serde(default = "enabled")]
+    pub control_from_either: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -221,6 +277,8 @@ pub struct Snapshot {
     pub status: String,
     pub latency_ms: Option<f64>,
     pub peer_paused: bool,
+    pub controller_id: Option<String>,
+    pub control_from_either: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +290,8 @@ pub struct InputSettings {
     pub terminal_apps: Vec<String>,
     pub shortcuts: Vec<Shortcut>,
     pub language_switch: String,
+    pub hotkey_only: bool,
+    pub bindings: Vec<ShortcutBinding>,
 }
 impl InputSettings {
     pub fn from_settings(s: &Settings) -> Self {
@@ -242,6 +302,8 @@ impl InputSettings {
             terminal_apps: s.terminal_apps.clone(),
             shortcuts: s.shortcuts.clone(),
             language_switch: s.language_switch.clone(),
+            hotkey_only: s.hotkey_only,
+            bindings: s.bindings.clone(),
         }
     }
     pub fn apply(self, s: &mut Settings) -> std::result::Result<(), String> {
@@ -252,8 +314,14 @@ impl InputSettings {
         next.terminal_apps = self.terminal_apps;
         next.shortcuts = self.shortcuts;
         next.language_switch = self.language_switch;
+        next.hotkey_only = self.hotkey_only;
+        next.bindings = self.bindings;
         next.validate()?;
         *s = next;
         Ok(())
     }
+}
+
+fn enabled() -> bool {
+    true
 }

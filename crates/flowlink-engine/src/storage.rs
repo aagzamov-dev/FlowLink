@@ -122,3 +122,21 @@ impl Store {
         self.save()
     }
 }
+
+#[cfg(test)]
+impl Store {
+    pub(crate) fn temporary() -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("flowlink-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        Self {
+            path: directory.join("settings.json"),
+            config: Mutex::new(Config::default()),
+            identity: Identity {
+                certificate: Vec::new(),
+                private_key: Zeroizing::new(Vec::new()),
+                id: "local".into(),
+            },
+        }
+    }
+}

@@ -10,15 +10,33 @@ import {
 } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Device, Settings, Snapshot, Run } from "../types";
+import { ShortcutEditor } from "../components/ShortcutEditor";
 import { Toggle, Modal } from "../components/common";
+import { Updates } from "../components/Updates";
+import type { UpdateCommand, UpdateStatus } from "../updates";
 
-export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
+export function Preferences({
+  state,
+  run,
+  update,
+  runUpdate,
+}: {
+  state: Snapshot;
+  run: Run;
+  update: UpdateStatus;
+  runUpdate: (command: UpdateCommand) => Promise<void>;
+}) {
   const [draft, setDraft] = useState<Settings>(state.settings);
+  const [terminalText, setTerminalText] = useState(
+    state.settings.terminalApps.join("\n"),
+  );
   const [autostart, setAutostart] = useState(false);
   const [report, setReport] = useState<string | null>(null);
   const signature = JSON.stringify(state.settings);
   useEffect(() => {
-    setDraft(JSON.parse(signature) as Settings);
+    const settings = JSON.parse(signature) as Settings;
+    setDraft(settings);
+    setTerminalText(settings.terminalApps.join("\n"));
   }, [signature]);
   useEffect(() => {
     if (isTauri())
@@ -45,6 +63,13 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
           Save changes
         </button>
       </div>
+      <Updates
+        update={update}
+        desktop={isTauri()}
+        automatic={draft.autoCheckUpdates}
+        onAutomatic={(enabled) => patch("autoCheckUpdates", enabled)}
+        run={runUpdate}
+      />
       <section className="settings-section">
         <h2>
           <Settings2 size={18} />
@@ -83,7 +108,9 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
           <label className="setting-row">
             <span>
               <strong>Keyboard preset</strong>
-              <small>Applied only when Windows controls the Mac.</small>
+              <small>
+                Applied when this device controls the other computer.
+              </small>
             </span>
             <select
               value={draft.preset}
@@ -91,14 +118,14 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
                 patch("preset", e.target.value as Settings["preset"])
               }
             >
-              <option value="windowsFamiliar">Windows familiar</option>
-              <option value="macNative">Mac native</option>
+              <option value="windowsFamiliar">Adapt editing shortcuts</option>
+              <option value="macNative">Physical keys</option>
             </select>
           </label>
           <div className="setting-explanation">
-            Windows familiar converts common editing shortcuts to Command.
-            Control shortcuts remain unchanged in recognized terminals. Windows
-            key acts as Command in Mac native mode.
+            Adapt editing shortcuts converts Ctrl to Command on Mac and Command
+            to Ctrl on Windows for enabled editing keys. Mac terminal exceptions
+            preserve Control. Physical keys forwards the original keys.
           </div>
           <label className="field padded">
             Terminal exceptions
@@ -108,13 +135,17 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
             </small>
             <textarea
               rows={3}
-              value={draft.terminalApps.join("\n")}
-              onChange={(e) =>
+              value={terminalText}
+              onChange={(e) => {
+                setTerminalText(e.target.value);
                 patch(
                   "terminalApps",
-                  e.target.value.split("\n").filter(Boolean),
-                )
-              }
+                  e.target.value
+                    .split("\n")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                );
+              }}
             />
           </label>
           <div className="shortcut-grid">
@@ -125,12 +156,16 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
               { scan: 0x1e, label: "Select all", key: "A" },
               { scan: 0x2c, label: "Undo", key: "Z" },
               { scan: 0x1f, label: "Save", key: "S" },
+              { scan: 0x21, label: "Find", key: "F" },
+              { scan: 0x18, label: "Open", key: "O" },
+              { scan: 0x19, label: "Print", key: "P" },
+              { scan: 0x31, label: "New", key: "N" },
             ].map((rule) => (
               <label key={rule.scan}>
                 <span>
                   {rule.label}
                   <small>
-                    Ctrl+{rule.key} → ⌘{rule.key}
+                    Ctrl+{rule.key} ↔ ⌘{rule.key}
                   </small>
                 </span>
                 <input
@@ -153,9 +188,13 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
               </label>
             ))}
           </div>
+          <ShortcutEditor
+            bindings={draft.bindings}
+            onChange={(bindings) => patch("bindings", bindings)}
+          />
           <label className="setting-row">
             <span>
-              <strong>Switch Mac input language</strong>
+              <strong>Windows → Mac language shortcut</strong>
               <small>
                 English and Russian input sources must be enabled on the Mac.
               </small>
@@ -174,8 +213,8 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
             </select>
           </label>
           <div className="setting-explanation">
-            English / Russian: the Mac’s selected input language controls
-            typing. Use{" "}
+            The receiving computer’s selected input language controls typing.
+            When Windows controls Mac, use{" "}
             <kbd>{draft.languageSwitch === "winSpace" ? "Win" : "Ctrl"}</kbd> +{" "}
             <kbd>Space</kbd> to switch its input source. Add both languages in
             macOS Keyboard settings.
@@ -191,7 +230,9 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
           <label className="setting-row">
             <span>
               <strong>Pointer speed</strong>
-              <small>Speed on the Mac relative to incoming movement.</small>
+              <small>
+                Speed on the receiving device relative to incoming movement.
+              </small>
             </span>
             <div className="range-field">
               <input
@@ -252,16 +293,16 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
           </label>
         </div>
       </section>
-      {state.os === "macos" && (
+      {state.os !== "preview" && (
         <section className="settings-section">
           <h2>
             <ShieldCheck size={18} />
-            Local Mac input
+            Local input
           </h2>
           <div className="settings-body">
             <Toggle
-              label="Allow local Mac keyboard and trackpad"
-              detail="When off, block ordinary local input only while Windows controls this Mac. Emergency release remains available."
+              label="Allow local keyboard and touchpad"
+              detail="When off, block ordinary local input only while the other computer controls this device. Emergency release remains available."
               checked={draft.allowLocalInput}
               onChange={(v) => patch("allowLocalInput", v)}
             />
@@ -296,7 +337,7 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
               value={draft.interface ?? ""}
               onChange={(e) => patch("interface", e.target.value || null)}
             >
-              <option value="">Available LAN interfaces</option>
+              <option value="">Automatic · LAN / VPN</option>
               {[...new Set(state.addresses.map((a) => a.interface))].map(
                 (name) => (
                   <option key={name}>{name}</option>
@@ -374,14 +415,14 @@ export function Preferences({ state, run }: { state: Snapshot; run: Run }) {
       <section className="settings-section">
         <h2>
           <CircleHelp size={18} />
-          About this build
+          About FlowLink
         </h2>
         <div className="settings-body">
           <p className="setting-explanation">
-            FlowLink 0.1 development build. Windows → macOS only. Secure OS
-            screens, reverse control, clipboard sharing, and gestures are
-            outside this release. Physical-device acceptance tests and a pairing
-            security review are required before public release.
+            Mac ↔ Windows keyboard, pointer, and scrolling. Choose the main
+            device from Devices. Secure OS screens, clipboard sharing, and
+            system multi-finger gestures are not forwarded. Both computers must
+            use this protocol version.
           </p>
         </div>
       </section>
