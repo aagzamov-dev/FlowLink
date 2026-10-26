@@ -78,36 +78,39 @@ impl Engine {
             .name("flowlink-discovery".into())
             .spawn(move || {
                 let mut discovery = None;
-                let mut advertised_name = String::new();
+                let mut advertised = None;
                 while let Some(engine) = weak.upgrade() {
                     if engine.shutdown.load(Ordering::SeqCst) {
                         break;
                     }
                     let settings = engine.store.settings();
-                    let name = settings.device_name;
-                    let registration_key = format!(
-                        "{}:{:?}:{}:{:?}",
-                        name,
+                    let addresses = engine
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .addresses
+                        .clone();
+                    let registration = (
+                        settings.device_name,
                         settings.interface,
                         engine.busy.load(Ordering::SeqCst),
-                        discovery::addresses()
-                            .iter()
-                            .map(|a| (&a.interface, &a.ip))
-                            .collect::<Vec<_>>()
+                        addresses,
                     );
-                    if discovery.is_none() || registration_key != advertised_name {
+                    if discovery.is_none() || advertised.as_ref() != Some(&registration) {
                         discovery = None;
+                        let (name, interface, busy, addresses) = &registration;
                         match Discovery::new(
                             &engine.store.identity.id,
-                            &name,
+                            name,
                             std::env::consts::OS,
                             true,
-                            engine.busy.load(Ordering::SeqCst),
-                            settings.interface.as_deref(),
+                            *busy,
+                            interface.as_deref(),
+                            addresses,
                         ) {
                             Ok(d) => {
                                 discovery = Some(d);
-                                advertised_name = registration_key;
+                                advertised = Some(registration);
                             }
                             Err(e) => {
                                 engine.error(format!("Discovery unavailable; connect by IP. {e}"))
@@ -1450,8 +1453,9 @@ impl Engine {
         let (incoming_tx, mut incoming) = mpsc::channel(512);
         let reader = tokio::spawn(async move {
             let mut read = read;
+            let mut buffer = Vec::new();
             loop {
-                let message = protocol::read::<Message>(&mut read).await;
+                let message = protocol::read_buffered::<Message>(&mut read, &mut buffer).await;
                 let failed = message.is_err();
                 if incoming_tx.send(message).await.is_err() || failed {
                     break;
@@ -1460,6 +1464,7 @@ impl Engine {
         });
         let writer = tokio::spawn(async move {
             let mut write = write;
+            let mut buffer = Vec::new();
             let mut pending = None;
             while let Some(mut message) = match pending.take() {
                 Some(message) => Some(message),
@@ -1482,7 +1487,7 @@ impl Engine {
                 let bye = matches!(message, Message::Goodbye);
                 timeout(
                     Duration::from_secs(5),
-                    protocol::write(&mut write, &message),
+                    protocol::write_buffered(&mut write, &message, &mut buffer),
                 )
                 .await??;
                 if bye {
@@ -2054,8 +2059,8 @@ impl Engine {
         let mut tick = tokio::time::interval(Duration::from_secs(3));
         let mut retry = Instant::now() - Duration::from_secs(5);
         let mut retry_delay = Duration::from_secs(2);
-        let mut previous_displays = String::new();
-        let mut previous_addresses = String::new();
+        let mut previous_displays: Option<Vec<Display>> = None;
+        let mut previous_addresses: Option<Vec<Address>> = None;
         loop {
             tick.tick().await;
             if self.shutdown.load(Ordering::SeqCst) {
@@ -2069,8 +2074,10 @@ impl Engine {
                 self.error("Native input permission was revoked".into());
             }
             let displays = platform::displays(&self.store.identity.id).unwrap_or_default();
-            let topology = serde_json::to_string(&displays).unwrap_or_default();
-            if !previous_displays.is_empty() && previous_displays != topology {
+            if previous_displays
+                .as_ref()
+                .is_some_and(|previous| previous != &displays)
+            {
                 let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
                 self.release_control();
                 self.clear_topology();
@@ -2082,14 +2089,16 @@ impl Engine {
                     s.status = "Displays changed · review arrangement".into();
                 });
             }
-            previous_displays = topology;
+            previous_displays = Some(displays.clone());
             let addresses = discovery::addresses();
-            let address_key = serde_json::to_string(&addresses).unwrap_or_default();
-            if !previous_addresses.is_empty() && address_key != previous_addresses {
+            if previous_addresses
+                .as_ref()
+                .is_some_and(|previous| previous != &addresses)
+            {
                 retry = Instant::now() - Duration::from_secs(5);
                 retry_delay = Duration::from_secs(2);
             }
-            previous_addresses = address_key;
+            previous_addresses = Some(addresses.clone());
             self.update(|s| {
                 s.permissions = permissions;
                 s.addresses = addresses;

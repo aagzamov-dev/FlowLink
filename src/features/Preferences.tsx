@@ -13,6 +13,7 @@ import type { Device, Settings, Snapshot, Run } from "../types";
 import { ShortcutEditor } from "../components/ShortcutEditor";
 import { Toggle, Modal } from "../components/common";
 import { Updates } from "../components/Updates";
+import { equal, useDraft } from "../drafts";
 import type { UpdateCommand, UpdateStatus } from "../updates";
 
 export function Preferences({
@@ -20,24 +21,27 @@ export function Preferences({
   run,
   update,
   runUpdate,
+  onDirty,
 }: {
   state: Snapshot;
   run: Run;
   update: UpdateStatus;
   runUpdate: (command: UpdateCommand) => Promise<void>;
+  onDirty: (dirty: boolean) => void;
 }) {
-  const [draft, setDraft] = useState<Settings>(state.settings);
-  const [terminalText, setTerminalText] = useState(
-    state.settings.terminalApps.join("\n"),
-  );
+  const { draft, setDraft, dirty, reset } = useDraft(state.settings);
+  const [saving, setSaving] = useState(false);
   const [autostart, setAutostart] = useState(false);
+  const [startupBusy, setStartupBusy] = useState(false);
   const [report, setReport] = useState<string | null>(null);
-  const signature = JSON.stringify(state.settings);
+  const [exportPath, setExportPath] = useState<string | null>(null);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
   useEffect(() => {
-    const settings = JSON.parse(signature) as Settings;
-    setDraft(settings);
-    setTerminalText(settings.terminalApps.join("\n"));
-  }, [signature]);
+    onDirty(dirty);
+    return () => onDirty(false);
+  }, [dirty, onDirty]);
   useEffect(() => {
     if (isTauri())
       void invoke<boolean>("autostart_enabled")
@@ -48,20 +52,41 @@ export function Preferences({
     setDraft((current) => ({ ...current, [key]: value }));
   const [confirmForget, setConfirmForget] = useState<Device | null>(null);
   return (
-    <>
+    <fieldset className="settings-fields" disabled={saving || backupBusy}>
       <div className="page-heading">
         <div>
           <span className="eyebrow">MAKE IT FEEL LIKE YOURS</span>
           <h1>Settings</h1>
           <p>Simple controls for a smoother, safer workspace.</p>
         </div>
-        <button
-          className="primary"
-          disabled={JSON.stringify(draft) === signature}
-          onClick={() => void run("save_settings", { settings: draft })}
-        >
-          Save changes
-        </button>
+        <div className="card-actions">
+          {dirty && (
+            <button disabled={saving || backupBusy} onClick={reset}>
+              Discard edits
+            </button>
+          )}
+          <button
+            className="primary"
+            disabled={!dirty || saving || backupBusy}
+            onClick={async () => {
+              setSaving(true);
+              const settings = {
+                ...draft,
+                terminalApps: draft.terminalApps
+                  .map((app) => app.trim())
+                  .filter(Boolean),
+              };
+              const result = await run<null>("save_settings", { settings });
+              if (result !== undefined)
+                setDraft((current) =>
+                  equal(current, draft) ? settings : current,
+                );
+              setSaving(false);
+            }}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
       </div>
       <Updates
         update={update}
@@ -91,10 +116,12 @@ export function Preferences({
             label="Launch at login"
             detail="Start in the background when you sign in."
             checked={autostart}
+            disabled={startupBusy || !isTauri()}
             onChange={async (enabled) => {
-              await run("set_autostart", { enabled });
-              if (isTauri())
-                setAutostart(await invoke<boolean>("autostart_enabled"));
+              setStartupBusy(true);
+              const result = await run<null>("set_autostart", { enabled });
+              if (result !== undefined) setAutostart(enabled);
+              setStartupBusy(false);
             }}
           />
         </div>
@@ -135,16 +162,9 @@ export function Preferences({
             </small>
             <textarea
               rows={3}
-              value={terminalText}
+              value={draft.terminalApps.join("\n")}
               onChange={(e) => {
-                setTerminalText(e.target.value);
-                patch(
-                  "terminalApps",
-                  e.target.value
-                    .split("\n")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                );
+                patch("terminalApps", e.target.value.split("\n"));
               }}
             />
           </label>
@@ -407,8 +427,109 @@ export function Preferences({
               >
                 Refresh health summary
               </button>
+              <button
+                onClick={async () => {
+                  const path = await run<string>("export_diagnostics");
+                  if (path) setExportPath(path);
+                }}
+              >
+                Save report to Downloads
+              </button>
+              {exportPath && (
+                <p role="status" className="muted">
+                  Saved to {exportPath}
+                </p>
+              )}
               {report && <pre className="diagnostic-report">{report}</pre>}
             </div>
+          )}
+        </div>
+      </section>
+      <section className="settings-section">
+        <h2>
+          <Settings2 size={18} />
+          Preference backup
+        </h2>
+        <div className="settings-body padded">
+          <p className="muted">
+            Back up saved keyboard, pointer, and switching preferences. Import
+            loads an editable draft; click Save changes to apply it. Device
+            identity, trust, network, and startup settings stay on this
+            computer.
+          </p>
+          <div className="card-actions">
+            <button
+              disabled={!isTauri() || backupBusy}
+              onClick={async () => {
+                setBackupBusy(true);
+                setImportError(null);
+                const path = await run<string>("export_preferences");
+                if (path) setBackupMessage(`Saved to ${path}`);
+                setBackupBusy(false);
+              }}
+            >
+              Save backup to Downloads
+            </button>
+            <label className="backup-import">
+              Import backup
+              <input
+                type="file"
+                accept=".json,application/json"
+                disabled={!isTauri() || backupBusy || saving}
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  setImportError(null);
+                  setBackupMessage(null);
+                  if (file.size > 65536) {
+                    setImportError("Preference backup exceeds 64 KiB.");
+                    return;
+                  }
+                  setBackupBusy(true);
+                  try {
+                    const settings = await run<Settings>(
+                      "preview_preferences_import",
+                      { data: await file.text(), settings: state.settings },
+                    );
+                    if (settings) {
+                      setDraft((current) => ({
+                        ...current,
+                        preset: settings.preset,
+                        pointerSpeed: settings.pointerSpeed,
+                        reverseScroll: settings.reverseScroll,
+                        terminalApps: settings.terminalApps,
+                        shortcuts: settings.shortcuts,
+                        languageSwitch: settings.languageSwitch,
+                        hotkeyOnly: settings.hotkeyOnly,
+                        bindings: settings.bindings,
+                        edgeResistanceMs: settings.edgeResistanceMs,
+                        emergencyKey: settings.emergencyKey,
+                      }));
+                      setBackupMessage(
+                        "Backup loaded. Review the draft, then save your changes.",
+                      );
+                    }
+                  } catch {
+                    setImportError(
+                      "Could not read this backup file. Choose a JSON preference backup.",
+                    );
+                  } finally {
+                    setBackupBusy(false);
+                  }
+                }}
+              />
+            </label>
+          </div>
+          {backupMessage && (
+            <p role="status" className="muted">
+              {backupMessage}
+            </p>
+          )}
+          {importError && (
+            <p role="alert" className="alert">
+              {importError}
+            </p>
           )}
         </div>
       </section>
@@ -436,9 +557,11 @@ export function Preferences({
             <button onClick={() => setConfirmForget(null)}>Cancel</button>
             <button
               className="danger"
-              onClick={() => {
-                void run("forget_device", { id: confirmForget.id });
-                setConfirmForget(null);
+              onClick={async () => {
+                const result = await run<null>("forget_device", {
+                  id: confirmForget.id,
+                });
+                if (result !== undefined) setConfirmForget(null);
               }}
             >
               Forget device
@@ -446,6 +569,6 @@ export function Preferences({
           </div>
         </Modal>
       )}
-    </>
+    </fieldset>
   );
 }

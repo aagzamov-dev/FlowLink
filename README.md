@@ -6,9 +6,9 @@ FlowLink connects two computers over the same network or a reachable private VPN
 
 ![Diagram showing Mac and Windows connected in either direction over a local network or private VPN](docs/images/connection.svg)
 
-> **Development preview · version 0.2.0**
+> **Version 1.0.0 · unsigned installers**
 >
-> Features below are implemented, with automated regression coverage. Real Mac ↔ Windows input, touchpad feel, and Kerio VPN reliability still need testing on physical devices. Use matching **0.2** builds on both computers; **0.1 is incompatible**. No new release has been published.
+> Features below are implemented, with automated regression coverage. Real Mac ↔ Windows input, touchpad feel, and Kerio VPN reliability still need testing on physical devices. Use matching **1.0.0** builds on both computers; **0.1 is incompatible**. Download installers from [GitHub Releases](https://github.com/aagzamov-dev/FlowLink/releases). Windows installers are unsigned; Mac builds are ad-hoc signed and not notarized.
 
 [Features](#features) · [Setup](#connect-your-computers) · [Shortcuts](#keyboard-and-touchpad) · [Installers](#installers) · [Development](#development)
 
@@ -25,6 +25,9 @@ FlowLink connects two computers over the same network or a reachable private VPN
 | **Pointer and scrolling**    | Adjust pointer speed and scroll direction; forward horizontal/vertical scrolling and small touchpad movements.                                                       |
 | **Pause and recovery**       | Pause sharing, return input locally, and release held input when a connection stalls. Pause survives app restarts.                                                   |
 | **Update controls**          | Check for updates, enable background checks, download a verified update, and choose when to install and restart.                                                     |
+| **Setup and connection help** | Follow a readiness checklist and inspect permissions, network selection, pause state, and connection guidance. |
+| **Preference backups** | Export saved keyboard, pointer, and switching preferences; import a validated draft before saving. Device identity and trust are excluded. |
+| **Diagnostics export** | Save an opt-in, redacted health summary to Downloads. |
 | **Menu-bar / tray controls** | Connect, pause, release control, and open settings without keeping the main window open.                                                                             |
 
 ## App preview
@@ -64,7 +67,8 @@ For your own mappings, open **Settings → Custom shortcuts**:
 
 1. Choose **Mac → Windows** or **Windows → Mac**.
 2. Enter a source and target, such as `Cmd+Shift+C` → `Ctrl+Shift+C`.
-3. Add or update the rule, then click **Save changes**.
+3. Type a combination, or pause sharing and use **Record source / Record target**. Recording uses physical key positions; system-reserved combinations may be intercepted by the OS. Escape cancels recording and Tab leaves it.
+4. Add or update the rule, then click **Save changes**. Unsaved settings and display edits are protected when navigating between pages.
 
 Configure shortcuts on the computer supplying input. Each computer keeps its own preferences. Switch and emergency shortcuts are reserved.
 
@@ -117,16 +121,22 @@ The [Check workflow](.github/workflows/check.yml) can produce Windows test artif
 
 The update mechanism is configured, but no new update was published. Checks may report unavailable until a valid update feed exists.
 
-The manual [Prepare installers workflow](.github/workflows/prepare-release.yml) prepares Mac and Windows artifacts without publishing a release. Production signing credentials and device testing are still required. See [update and signing setup](docs/UPDATES.md).
+The manual [release workflow](.github/workflows/prepare-release.yml) builds Mac and Windows artifacts and publishes them when its `publish` input is enabled. Production signing credentials and device testing are still required. See [update and signing setup](docs/UPDATES.md).
+
+### Backups and support reports
+
+In **Settings → Preference backup**, save the current saved keyboard, pointer, and switching preferences to Downloads, or import a FlowLink JSON backup (up to 64 KiB). Import validates the file and loads a draft for review; use **Save changes** to apply it. Device name, identity, trusted peers, network selection, pause/local-input controls, update preferences, and launch-at-login settings are excluded.
+
+In **Settings → Diagnostics**, enable diagnostics and save that preference, then refresh the health summary or save a report to Downloads. Reports contain readiness/counts and current round-trip latency, with no names, addresses, pairing codes, credentials, or typed input. These are health snapshots, not persisted event logs.
 
 ## Current limits
 
 - One connected peer at a time. All native displays on the main computer are supported, with one selected controlled display for edge switching.
-- No Linux, clipboard/file transfer, USB-specific networking, macros, or shortcut recording.
+- No Linux, clipboard/file transfer, USB-specific networking, or macros.
 - Login/FileVault screens, Windows UAC/secure desktops, protected input, media keys, and all keyboard/IME combinations are unsupported or unverified.
 - Automated tests cover ownership changes, recovery, shortcuts, fractional scrolling, and connection fallback. They do not prove real-device latency, pointer feel, or VPN reliability.
 
-See [testing and device checks](docs/TESTING.md) and the [roadmap](docs/ROADMAP.md).
+See [testing and device checks](docs/TESTING.md), the [roadmap](docs/ROADMAP.md), and the [prioritized future feature backlog](docs/FUTURE_FEATURES.md).
 
 ## Privacy and connection security
 

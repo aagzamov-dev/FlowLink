@@ -13,9 +13,18 @@ import { isTauri } from "@tauri-apps/api/core";
 import type { Placement, Rect, Snapshot, Run } from "../types";
 import { layoutError, placeBeside, snap, sharedEdges } from "../layout";
 import type { Side } from "../layout";
+import { equal, useDraft } from "../drafts";
 import { Empty } from "../components/common";
 
-export function Displays({ state, run }: { state: Snapshot; run: Run }) {
+export function Displays({
+  state,
+  run,
+  onDirty,
+}: {
+  state: Snapshot;
+  run: Run;
+  onDirty: (dirty: boolean) => void;
+}) {
   const mainId = state.controllerId ?? state.deviceId;
   const mainName =
     mainId === state.deviceId
@@ -28,16 +37,24 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
     targets.find((d) => d.id === targetId) ??
     targets.find((d) => d.id === state.placements[0]?.displayId) ??
     targets[0];
-  const [draft, setDraft] = useState<Placement[]>(state.placements);
+  const {
+    draft: edit,
+    setDraft: setEdit,
+    dirty,
+    reset,
+  } = useDraft({ placements: state.placements });
+  const draft = edit.placements;
+  const setDraft = (placements: Placement[]) => setEdit({ placements });
+  const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState<{ dx: number; dy: number } | null>(
     null,
   );
   const [screenId, setScreenId] = useState("");
   const svg = useRef<SVGSVGElement>(null);
-  const signature = JSON.stringify(state.placements);
   useEffect(() => {
-    setDraft(JSON.parse(signature) as Placement[]);
-  }, [signature, state.connectedId]);
+    onDirty(dirty);
+    return () => onDirty(false);
+  }, [dirty, onDirty]);
   const selected = host.find((d) => d.id === screenId) ?? host.at(-1);
   const virtualTarget = target
     ? (draft.find((p) => p.displayId === target.id)?.rect ??
@@ -306,7 +323,16 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
               value={target?.id ?? ""}
               onChange={(e) => {
                 setTargetId(e.target.value);
-                setDraft([]);
+                const next = targets.find(
+                  (display) => display.id === e.target.value,
+                );
+                if (next && selected)
+                  setDraft([
+                    {
+                      displayId: next.id,
+                      rect: placeBeside(selected.rect, next.rect, "right"),
+                    },
+                  ]);
                 setView(null);
               }}
             >
@@ -338,7 +364,8 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
           </div>
           <button
             onClick={() => {
-              setDraft(state.placements);
+              reset();
+              setTargetId(state.placements[0]?.displayId ?? "");
               setView(null);
             }}
           >
@@ -346,10 +373,16 @@ export function Displays({ state, run }: { state: Snapshot; run: Run }) {
           </button>
           <button
             className="primary"
-            disabled={!!invalid}
-            onClick={() => void run("save_layout", { placements })}
+            disabled={
+              !!invalid || saving || equal(placements, state.placements)
+            }
+            onClick={async () => {
+              setSaving(true);
+              await run("save_layout", { placements });
+              setSaving(false);
+            }}
           >
-            Save arrangement
+            {saving ? "Saving…" : "Save arrangement"}
           </button>
         </section>
       )}

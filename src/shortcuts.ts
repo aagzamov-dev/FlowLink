@@ -115,3 +115,52 @@ export function formatChord(key: number, modifiers: number): string {
     rows.find(([, code]) => code === key)?.[0] ?? `Scan ${key}`,
   ].join("+");
 }
+
+export function recordChord(
+  event: Pick<
+    KeyboardEvent,
+    | "code"
+    | "ctrlKey"
+    | "shiftKey"
+    | "altKey"
+    | "metaKey"
+    | "isComposing"
+    | "repeat"
+  >,
+): string | null {
+  if (event.isComposing || event.repeat) return null;
+  const aliases: Readonly<Record<string, string>> = {
+    Space: "Space",
+    ArrowUp: "Up",
+    ArrowDown: "Down",
+    ArrowLeft: "Left",
+    ArrowRight: "Right",
+    Minus: "-",
+    Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Semicolon: ";",
+    Quote: "'",
+    Backquote: "`",
+    Backslash: "Backslash",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+  };
+  const name = aliases[event.code] ?? event.code.replace(/^(Key|Digit)/, "");
+  const key = rows.find(([label]) => label === name)?.[1];
+  if (key === undefined) return null;
+  const modifiers =
+    Number(event.ctrlKey) |
+    (Number(event.shiftKey) << 1) |
+    (Number(event.altKey) << 2) |
+    (Number(event.metaKey) << 3);
+  return formatChord(key, modifiers);
+}
+
+export function reservedChord(chord: {
+  key: number;
+  modifiers: number;
+}): boolean {
+  return chord.modifiers === 7 && [1, 88, 0x14d].includes(chord.key);
+}

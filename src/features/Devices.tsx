@@ -16,6 +16,7 @@ import {
 import type { Device, Page, Snapshot, Run } from "../types";
 import { sortedDevices } from "../layout";
 import { Badge, Empty } from "../components/common";
+import { ConnectionGuide } from "../components/ConnectionGuide";
 import { AddressList } from "../components/AddressList";
 
 export function Devices({
@@ -153,6 +154,12 @@ export function Devices({
           </div>
         </div>
       </section>
+      <ConnectionGuide
+        state={state}
+        run={run}
+        navigate={navigate}
+        manual={manual}
+      />
       {connected && (
         <section className="settings-section">
           <h2>Main device</h2>

@@ -1695,3 +1695,70 @@ kbd {
 .shortcut-editor input {
   width: 155px;
 }
+
+.connection-guide {
+  margin: 20px 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.connection-guide details {
+  padding: 16px 20px;
+}
+.connection-guide details + details {
+  border-top: 1px solid var(--border);
+}
+.connection-guide summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.connection-guide summary span {
+  margin-left: 10px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.setup-steps {
+  list-style: none;
+  padding: 0;
+}
+.setup-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.setup-steps li span {
+  flex: 1;
+}
+.connection-facts div {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 15px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.connection-facts dt {
+  color: var(--muted);
+}
+.connection-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.backup-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.backup-import input {
+  max-width: 230px;
+}
+.settings-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}

@@ -1,0 +1,2 @@
+# Signed payloads must retain their exact bytes on every platform.
+src-tauri/tests/fixtures/update.txt -text

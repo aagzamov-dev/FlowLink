@@ -303,6 +303,7 @@ mod tests {
 
     fn fixture_updater() -> tauri_plugin_updater::Updater {
         let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        context.package_info_mut().version = "0.2.0".parse().unwrap();
         context.config_mut().plugins.0.insert(
             "updater".into(),
             serde_json::json!({"pubkey": include_str!("../tests/fixtures/update.pub").trim()}),
@@ -335,7 +336,10 @@ mod tests {
             .unwrap()
             .unwrap();
         let payload = include_bytes!("../tests/fixtures/update.txt");
+        assert!(!payload.contains(&b'\r'));
         update.verify(payload).unwrap();
+        let crlf_payload = String::from_utf8_lossy(payload).replace("\n", "\r\n");
+        assert!(update.verify(crlf_payload.as_bytes()).is_err());
         assert!(update.verify(b"modified package").is_err());
         let relabelled = updater
             .restore_update(fixture_manifest("0.2.2"))

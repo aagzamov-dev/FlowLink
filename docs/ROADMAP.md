@@ -3,6 +3,9 @@
 ## Implemented in development source
 
 - Rust engine, Tauri tray/quick panel, React/TypeScript devices/displays/settings interface.
+- Setup checklist and connection help; guarded unsaved drafts, save feedback, pairing expiry countdown and failed-submission recovery.
+- Physical-key shortcut recording and validated portable preference backups; opt-in diagnostic health exports.
+- Cached discovery address inventory, typed snapshot/inventory comparisons, separate throttled latency events, and reusable session frame buffers.
 - Private-LAN discovery, manual IP/hostname connection, live assigned addresses and copy actions.
 - Device names, favorites, trust revocation, device search, one active receiver, automatic trusted reconnect and pause persistence.
 - Six-digit SPAKE2 pairing, OS-protected identity, mutually authenticated pinned TLS 1.3, frame/rate bounds.
@@ -27,15 +30,19 @@
 
 - One active peer. Either Mac or Windows is main, with an either/main-only role policy. One selected controlled display defines switching edges.
 - Input capture is deliberately fail-closed if native setup fails; granting permissions requires restarting the app.
-- Fixed switch chord; emergency escape has two supported choices. Common shortcuts and arbitrary supported key/chord mappings are editable in both directions; no macro engine or shortcut recorder.
+- Fixed switch chord; emergency escape has two supported choices. Common shortcuts and arbitrary supported key/chord mappings are editable in both directions; no macro engine. A local shortcut recorder is available for supported physical keys; OS-reserved combinations can still be intercepted.
 - The receiving computer's input source is authoritative. No automatic Windows/Mac language-state synchronization; input-source shortcut must be enabled in macOS.
 - Only configured terminal applications get automatic Control exceptions; integrated terminal panes are not automatically distinguished from their parent editor.
 - Screen/address inventory uses a three-second refresh. Native display/adapter notifications and deeper idle optimization remain future work.
 - The Windows local pointer is recentered during remote input; visual pointer hiding and high-rate relative motion need hardware validation.
 - IPv4 and IPv6 ULA connection paths are implemented. Scoped IPv6/link-local and adapter failover remain unverified.
-- Opt-in local diagnostic summaries are available. No persisted diagnostic log or diagnostic export yet.
+- Opt-in local diagnostic summaries and Downloads exports are available. No persisted diagnostic event log yet.
 - No public updater, signed release pipeline, cloud, Linux, clipboard content, files, login/FileVault, UAC/secure desktop, or native multi-finger gesture forwarding.
 
 ## Later milestones
 
 After the physical acceptance gates pass: improve relative pointer capture/idle behavior, wider keyboard tests, diagnostics, signing, and release. Then consider additional receivers/displays, opt-in clipboard sharing, and direct wired-IP research. Ordinary Ethernet LAN is already in scope; USB-specific networking/drivers are not.
+
+## Prioritized follow-up work
+
+See [Future features and optimizations](FUTURE_FEATURES.md) for the remaining backlog, dependencies, effort estimates, and acceptance criteria. Physical input and release acceptance remain gates before public distribution.

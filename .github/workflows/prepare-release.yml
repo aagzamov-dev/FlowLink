@@ -1,7 +1,12 @@
-name: Prepare installers (no publishing)
+name: Prepare or release installers
 on:
   workflow_dispatch:
     inputs:
+      publish:
+        description: Publish all verified packages as a stable GitHub release
+        type: boolean
+        default: false
+        required: true
       signing:
         description: Platform signing (development files are for testing only)
         type: choice
@@ -113,6 +118,8 @@ jobs:
           include-hidden-files: true
   assemble:
     needs: build
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -134,11 +141,24 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
+      - name: Publish complete release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release create "v$VERSION" .tools/release-artifacts/*.dmg .tools/release-artifacts/*.exe .tools/release-artifacts/*.gz .tools/release-artifacts/*.sig .tools/release-artifacts/latest.json .tools/release-artifacts/SHA256SUMS.txt --target "$GITHUB_SHA" --title "FlowLink v$VERSION" --notes-file docs/RELEASE_NOTES.md --draft
+          gh release edit "v$VERSION" --draft=false --latest
       - name: Preparation summary
         env:
           ARTIFACT_URL: ${{ steps.prepared.outputs.artifact-url }}
+          PUBLISH: ${{ inputs.publish }}
           SIGNING_MODE: ${{ inputs.signing }}
         run: |
           echo "Prepared $SIGNING_MODE Mac and Windows installers, signatures, checksums and latest.json." >> "$GITHUB_STEP_SUMMARY"
           echo "[Download prepared files]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
-          echo "Nothing was published. No release or tag was created. Development files must not be published as a production update." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PUBLISH" = "true" ]; then
+            echo "Published the complete release from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing was published. No release or tag was created." >> "$GITHUB_STEP_SUMMARY"
+          fi

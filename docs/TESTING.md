@@ -120,3 +120,21 @@ Tests use a simulated native input backend; they do not install live hooks or in
 These results do not certify keyboard/mouse injection, simultaneous input, OS-protected screens, network failover, or measured recovery/latency on physical machines.
 
 After the user granted Device Control, the packaged app was restarted. System Settings showed FlowLink enabled under Device Control and Data Access, but absent from the separate Input Monitoring list. Input readiness remains pending that user-controlled grant and a subsequent restart. Retina backing-pixel enumeration was corrected using CGDisplayModeGetPixelWidth/Height; the corrected source passes the Rust checks and is included in the final bundle.
+
+## Optimization and convenience-feature verification — 2026-10-25
+
+- Rust workspace: 59 tests passed (53 engine, 6 updater). Added backup format/validation/local-setting isolation checks and reusable-frame tests covering varying lengths, rejected oversized payloads, and no partial writes. Existing handoff, cleanup, motion-ordering, and endpoint-fallback regressions pass.
+- Frontend: 25 tests passed; release tooling: 5 tests passed. Added draft-merge checks, physical-key recording/reserved-chord checks, setup readiness, and expired pairing markup checks.
+- Strict TypeScript, ESLint, frontend production build, release configuration check, Rust formatting, Clippy with warnings denied, and the macOS native release executable build passed.
+- Browser preview: recorded a shortcut, added its rule, triggered the unsaved-navigation prompt, kept editing, retained multiline terminal edits after a failed preview save, discarded edits, and returned to Devices. Setup checklist layout was inspected.
+- Downloads export commands compile in the native app. Backup parsing and validation are tested without applying preferences or accessing real credentials. Physical Mac/Windows Downloads behavior, native shortcut interception, and actual installed-app execution remain acceptance checks.
+- No physical Mac ↔ Windows/VPN latency or idle-CPU measurements were taken. Cached discovery inventory, per-window snapshots, separate latency events, and frame reuse remove redundant work; numerical improvements remain unmeasured.
+
+Additional manual checks for this pass:
+
+1. Keep settings edits open while pausing/resuming from the tray. Untouched pause state must update while typed preferences remain intact. Save and reopen settings; confirm normalized multiline terminal entries and persisted shortcuts.
+2. Open/close main and quick windows independently while latency changes. Hidden windows must receive no periodic engine events; newly shown windows must refresh and report current latency. Pairing should still bring the main window forward.
+3. Change a display arrangement, cancel navigation, then save it. Reset after selecting another remote display should return to the saved display. Unplug a display or change the main device; stale drafts must not re-enable old switching edges.
+4. Export preferences to Downloads, change input preferences, and import the backup. Review before saving. Reject future-version, oversized, malformed, invalid-key, and duplicate-rule files. Preserve device name, trust, pause, local-input policy, network interface, diagnostics, updates, and autostart.
+5. Enable and save diagnostics, then export a report. Verify the file opens as JSON, contains no names/addresses/codes/typed input, and never replaces an existing file. Disable diagnostics and confirm native export is rejected.
+6. Test pairing countdown in approval/code-entry/code-display stages. Expired codes must not be submitted or displayed as usable. A failed native submission must allow recovery; closing must cancel the outstanding request.

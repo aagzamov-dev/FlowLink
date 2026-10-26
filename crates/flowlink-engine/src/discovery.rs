@@ -66,10 +66,11 @@ impl Discovery {
         receiver: bool,
         busy: bool,
         interface: Option<&str>,
+        addresses: &[Address],
     ) -> Result<Self> {
         let daemon = ServiceDaemon::new()?;
-        let local = addresses()
-            .into_iter()
+        let local = addresses
+            .iter()
             .filter(|a| interface.is_none_or(|name| a.interface == name))
             .collect::<Vec<_>>();
         daemon.disable_interface(IfKind::All)?;

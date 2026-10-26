@@ -21,7 +21,7 @@ pub enum Preset {
     MacNative,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Shortcut {
     pub scan_code: u16,
@@ -35,7 +35,7 @@ pub enum Direction {
     MacToWindows,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShortcutBinding {
     pub direction: Direction,
@@ -45,7 +45,7 @@ pub struct ShortcutBinding {
     pub target_modifiers: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
     pub schema: u32,
@@ -182,7 +182,7 @@ impl Rect {
             && self.height > 0.0
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Display {
     pub id: String,
@@ -196,20 +196,20 @@ pub struct Display {
     pub rotation: f64,
     pub online: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Placement {
     pub display_id: String,
     pub rect: Rect,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Address {
     pub interface: String,
     pub ip: String,
     pub kind: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
     pub id: String,
@@ -224,7 +224,7 @@ pub struct Device {
     pub auto_connect: bool,
     pub last_seen: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustedDevice {
     pub device: Device,
@@ -241,14 +241,14 @@ pub struct TrustedDevice {
     #[serde(default = "enabled")]
     pub control_from_either: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Permissions {
     pub accessibility: bool,
     pub monitoring: bool,
     pub filtering: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingPrompt {
     pub request_id: String,
@@ -258,7 +258,7 @@ pub struct PairingPrompt {
     pub expires_at: u64,
     pub awaiting_code: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub device_id: String,
@@ -281,7 +281,7 @@ pub struct Snapshot {
     pub control_from_either: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputSettings {
     pub preset: Preset,
@@ -324,4 +324,95 @@ impl InputSettings {
 
 fn enabled() -> bool {
     true
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreferencesBackup {
+    format: String,
+    version: u32,
+    input: InputSettings,
+    edge_resistance_ms: u64,
+    emergency_key: u16,
+}
+impl PreferencesBackup {
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            format: "flowlink-preferences".into(),
+            version: 1,
+            input: InputSettings::from_settings(settings),
+            edge_resistance_ms: settings.edge_resistance_ms,
+            emergency_key: settings.emergency_key,
+        }
+    }
+    pub fn import(data: &str, settings: &Settings) -> std::result::Result<Settings, String> {
+        if data.len() > 64 * 1024 {
+            return Err("Preference backup exceeds 64 KiB".into());
+        }
+        let backup: Self =
+            serde_json::from_str(data).map_err(|e| format!("Invalid preference backup: {e}"))?;
+        if backup.format != "flowlink-preferences" || backup.version != 1 {
+            return Err("Unsupported preference backup format or version".into());
+        }
+        settings.validate()?;
+        let mut next = settings.clone();
+        backup.input.apply(&mut next)?;
+        next.edge_resistance_ms = backup.edge_resistance_ms;
+        next.emergency_key = backup.emergency_key;
+        next.validate()?;
+        Ok(next)
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    #[test]
+    fn portable_preferences_exclude_identity_and_preserve_local_controls() {
+        let source = Settings {
+            pointer_speed: 2.0,
+            device_name: "Do not export".into(),
+            ..Settings::default()
+        };
+        let data = serde_json::to_string(&PreferencesBackup::from_settings(&source)).unwrap();
+        assert!(!data.contains("Do not export"));
+        assert!(!data.contains("deviceName"));
+        assert!(!data.contains("interface"));
+        let local = Settings {
+            paused: true,
+            allow_local_input: false,
+            diagnostics: true,
+            interface: Some("vpn".into()),
+            ..Settings::default()
+        };
+        let imported = PreferencesBackup::import(&data, &local).unwrap();
+        assert_eq!(imported.pointer_speed, 2.0);
+        assert_eq!(imported.device_name, local.device_name);
+        assert!(imported.paused);
+        assert!(!imported.allow_local_input);
+        assert!(imported.diagnostics);
+        assert_eq!(imported.interface, local.interface);
+    }
+    #[test]
+    fn invalid_or_future_backups_are_rejected_without_changing_settings() {
+        let local = Settings::default();
+        let mut backup = PreferencesBackup::from_settings(&local);
+        backup.version = 2;
+        assert!(
+            PreferencesBackup::import(&serde_json::to_string(&backup).unwrap(), &local).is_err()
+        );
+        backup.version = 1;
+        backup.emergency_key = 30;
+        assert!(
+            PreferencesBackup::import(&serde_json::to_string(&backup).unwrap(), &local).is_err()
+        );
+        backup.emergency_key = 1;
+        backup.input.pointer_speed = 99.0;
+        assert!(
+            PreferencesBackup::import(&serde_json::to_string(&backup).unwrap(), &local).is_err()
+        );
+        assert!(PreferencesBackup::import(&" ".repeat(65537), &local).is_err());
+        assert!(PreferencesBackup::import("{}", &local).is_err());
+        assert_eq!(local.pointer_speed, 1.0);
+    }
 }

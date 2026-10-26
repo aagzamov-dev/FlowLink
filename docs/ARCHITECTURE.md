@@ -33,7 +33,9 @@ Windows is DPI-aware. Its screen rectangles use native virtual-desktop pixels to
 
 Only positive-length shared edges of at least 16 units switch. Two-unit corner insets prevent diagonal corner transitions. Edge resistance defaults to 100 ms; returning applies a cooldown. Held keys/buttons delay handoff. Display identities are saved per main device; invalid arrangements require explicit review. Display changes are exchanged with the peer and invalidate cached return edges. One chosen controlled display defines switching edges. Pointer targets are clamped to actual monitor rectangles, including gaps and negative coordinates.
 
-Display and address inventory currently refresh every three seconds, with mDNS service-removal events for availability. OS-notification-based inventory updates and more aggressive idle optimization remain follow-up work. The tray/UI snapshot worker operates independently of input callbacks and avoids emitting unchanged state to hidden windows.
+Display and address inventory currently refresh every three seconds, with mDNS service-removal events for availability. Discovery reuses the maintenance worker’s cached addresses, including when registering services; connection attempts still take fresh routing inventory. Inventory changes use typed equality rather than JSON serialization. OS-notification-based inventory updates and more aggressive idle optimization remain follow-up work.
+
+The tray/UI worker operates independently of input callbacks, compares typed snapshots, and emits only to visible main/quick windows. Each window has its own state cache, cleared while hidden so reopening refreshes it. Latency is removed from state comparisons and delivered separately about once a second to an isolated footer component. Tray tooltips update only when their label changes.
 
 ## Persistence and interface
 
@@ -41,8 +43,12 @@ Versioned JSON stores non-secret preferences, public trusted certificates, last 
 
 Public commands cover snapshot, connect/disconnect, pause/return/switch, layout/settings, pairing approval/cancellation, trust/favorites/auto-connect, copying assigned addresses, identify, guided permissions, and startup preference. Custom commands expose no arbitrary paths, shell execution, or raw input injection to the UI.
 
+Settings and display drafts preserve edits across background snapshots; unchanged fields accept fresh values, including pause state. Leaving a page with edits requires an explicit discard. Display topology/ownership changes reset the layout editor so invalid geometry cannot be retained. Saves report success only after the native command completes; duplicate commands are suppressed while pending.
+
+Portable preference backups use a separately versioned, bounded JSON format containing input/switching preferences only. Import is validated by Rust and loaded into an editable draft. Exports use fixed generated filenames in Downloads with create-new semantics; frontend commands accept no output paths. Diagnostic exports use the existing opt-in redacted health snapshot.
+
 ## Connection and event throughput
 
 Automatic connections let the OS route traffic, including private VPN routes. Hostname resolution is bounded and concurrent; address/interface attempts are staggered by 75 ms with a two-second connect limit per attempt. The winning connection cancels the other probes. Incoming sockets reserve the session only after a bounded, valid Hello, so abandoned probes do not block the real connection. Trust still binds the final peer identity. Manual hostnames/custom ports and successful source addresses are remembered; adapter changes reset reconnect backoff.
 
-The writer merges only consecutive motion events with the same control token, never across key/button/scroll or control barriers. Each frame is written as one header-plus-payload buffer. Scroll deltas retain fractional remainders at native integer APIs. Mac capture uses pixel scroll fields and preserves scroll phases (including mayBegin) and momentum deltas. Windows receives these as high-resolution wheel events; applications decide how to render them. This is not native multi-finger gesture forwarding.
+The writer merges only consecutive motion events with the same control token, never across key/button/scroll or control barriers. Each frame is written as one header-plus-payload buffer. Session readers and writers retain their frame buffers across messages; serialization writes directly behind the length prefix. Frame limits are checked before reading payloads and before writing any bytes. Pairing retains the same wire format and size limits. Scroll deltas retain fractional remainders at native integer APIs. Mac capture uses pixel scroll fields and preserves scroll phases (including mayBegin) and momentum deltas. Windows receives these as high-resolution wheel events; applications decide how to render them. This is not native multi-finger gesture forwarding.

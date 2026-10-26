@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod updates;
 use flowlink_engine::{
-    model::{Placement, Settings, Snapshot},
+    model::{Placement, PreferencesBackup, Settings, Snapshot},
     Engine,
 };
 use std::sync::{atomic::Ordering, Arc};
@@ -20,6 +20,46 @@ fn snapshot(state: tauri::State<AppState>) -> Snapshot {
 #[tauri::command]
 fn diagnostics(state: tauri::State<AppState>) -> CommandResult<String> {
     state.0.diagnostics().map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn export_diagnostics(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> CommandResult<String> {
+    let report = state.0.diagnostics().map_err(|e| e.to_string())?;
+    save_download(&app, "diagnostics", &report)
+}
+#[tauri::command]
+fn export_preferences(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> CommandResult<String> {
+    let backup = PreferencesBackup::from_settings(&state.0.store.settings());
+    let data = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
+    save_download(&app, "preferences", &data)
+}
+#[tauri::command]
+fn preview_preferences_import(data: String, settings: Settings) -> CommandResult<Settings> {
+    PreferencesBackup::import(&data, &settings)
+}
+fn save_download(app: &tauri::AppHandle, kind: &str, data: &str) -> CommandResult<String> {
+    use std::io::Write;
+    let directory = app.path().download_dir().map_err(|e| e.to_string())?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let path = directory.join(format!("flowlink-{kind}-{timestamp}.json"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(|e| e.to_string())?;
+    file.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 #[tauri::command]
 fn connect(state: tauri::State<AppState>, address: String) -> CommandResult<()> {
@@ -310,11 +350,14 @@ fn main() {
             std::thread::Builder::new()
                 .name("flowlink-ui-state".into())
                 .spawn(move || {
-                    let mut previous = String::new();
+                    let mut previous = std::collections::HashMap::<String, Snapshot>::new();
+                    let mut previous_label = "";
+                    let mut metrics_at = std::time::Instant::now();
                     let mut pairing_id = String::new();
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(400));
-                        let state = engine.snapshot();
+                        let mut state = engine.snapshot();
+                        let latency = state.latency_ms.take();
                         if let Some(pairing) = &state.pairing {
                             if pairing_id != pairing.request_id {
                                 pairing_id = pairing.request_id.clone();
@@ -333,21 +376,34 @@ fn main() {
                             flowlink_engine::model::Ownership::Paused => "FlowLink · paused",
                             _ => "FlowLink · local control",
                         };
-                        let _ = tray.set_tooltip(Some(label));
+                        if label != previous_label {
+                            let _ = tray.set_tooltip(Some(label));
+                            previous_label = label;
+                        }
                         if engine.identify_requested.swap(false, Ordering::SeqCst) {
                             show_identifiers(&handle, &engine);
                         }
-                        if handle
-                            .webview_windows()
-                            .values()
-                            .any(|w| w.is_visible().unwrap_or(false))
-                        {
-                            if let Ok(serialized) = serde_json::to_string(&state) {
-                                if serialized != previous {
-                                    previous = serialized;
-                                    let _ = handle.emit("engine-state", &state);
-                                }
+                        let metrics_due = metrics_at.elapsed() >= std::time::Duration::from_secs(1);
+                        for (name, window) in handle.webview_windows() {
+                            if !["main", "quick"].contains(&name.as_str()) {
+                                continue;
                             }
+                            if !window.is_visible().unwrap_or(false) {
+                                previous.remove(&name);
+                                continue;
+                            }
+                            let first = !previous.contains_key(&name);
+                            if previous.get(&name) != Some(&state)
+                                && window.emit("engine-state", &state).is_ok()
+                            {
+                                previous.insert(name, state.clone());
+                            }
+                            if first || metrics_due {
+                                let _ = window.emit("engine-latency", latency);
+                            }
+                        }
+                        if metrics_due {
+                            metrics_at = std::time::Instant::now();
                         }
                     }
                 })?;
@@ -368,6 +424,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             diagnostics,
+            export_diagnostics,
+            export_preferences,
+            preview_preferences_import,
             connect,
             disconnect,
             pause,

@@ -121,26 +121,40 @@ pub enum Message {
     Identify,
 }
 pub async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T> {
+    read_buffered(stream, &mut Vec::new()).await
+}
+pub async fn read_buffered<T: DeserializeOwned>(
+    stream: &mut (impl AsyncRead + Unpin),
+    buffer: &mut Vec<u8>,
+) -> Result<T> {
     let len = stream.read_u32().await? as usize;
     if len == 0 || len > MAX_FRAME {
         return Err("Invalid protocol frame length".into());
     }
-    let mut buf = vec![0; len];
-    stream.read_exact(&mut buf).await?;
-    Ok(serde_json::from_slice(&buf)?)
+    buffer.resize(len, 0);
+    stream.read_exact(buffer).await?;
+    Ok(serde_json::from_slice(buffer)?)
 }
 pub async fn write<T: Serialize>(
     stream: &mut (impl AsyncWrite + Unpin),
     message: &T,
 ) -> Result<()> {
-    let data = serde_json::to_vec(message)?;
-    if data.is_empty() || data.len() > MAX_FRAME {
+    write_buffered(stream, message, &mut Vec::new()).await
+}
+pub async fn write_buffered<T: Serialize>(
+    stream: &mut (impl AsyncWrite + Unpin),
+    message: &T,
+    buffer: &mut Vec<u8>,
+) -> Result<()> {
+    buffer.clear();
+    buffer.extend_from_slice(&[0; 4]);
+    serde_json::to_writer(&mut *buffer, message)?;
+    let len = buffer.len() - 4;
+    if len == 0 || len > MAX_FRAME {
         return Err("Protocol message exceeds size limit".into());
     }
-    let mut frame = Vec::with_capacity(4 + data.len());
-    frame.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    frame.extend_from_slice(&data);
-    stream.write_all(&frame).await?;
+    buffer[..4].copy_from_slice(&(len as u32).to_be_bytes());
+    stream.write_all(buffer).await?;
     stream.flush().await?;
     Ok(())
 }
@@ -162,6 +176,43 @@ mod tests {
         assert!(matches!(
             read::<Message>(&mut b).await.unwrap(),
             Message::Heartbeat { nonce: 5 }
+        ));
+    }
+    #[tokio::test]
+    async fn reused_buffers_handle_different_frame_sizes_without_stale_bytes() {
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        let mut write_buffer = Vec::new();
+        let mut read_buffer = Vec::new();
+        for nonce in [u64::MAX, 1, 1000000, 0] {
+            write_buffered(&mut a, &Message::Heartbeat { nonce }, &mut write_buffer)
+                .await
+                .unwrap();
+            let message = read_buffered::<Message>(&mut b, &mut read_buffer)
+                .await
+                .unwrap();
+            assert!(matches!(message, Message::Heartbeat { nonce: actual } if actual == nonce));
+        }
+        assert!(write_buffer.capacity() >= write_buffer.len());
+        a.write_u32((MAX_FRAME + 1) as u32).await.unwrap();
+        let capacity = read_buffer.capacity();
+        assert!(read_buffered::<Message>(&mut b, &mut read_buffer)
+            .await
+            .is_err());
+        assert_eq!(read_buffer.capacity(), capacity);
+    }
+    #[tokio::test]
+    async fn oversized_writes_never_send_partial_frames() {
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        let mut buffer = Vec::new();
+        assert!(write_buffered(&mut a, &"x".repeat(MAX_FRAME), &mut buffer)
+            .await
+            .is_err());
+        write_buffered(&mut a, &Message::Pause, &mut buffer)
+            .await
+            .unwrap();
+        assert!(matches!(
+            read::<Message>(&mut b).await.unwrap(),
+            Message::Pause
         ));
     }
 }

@@ -1,6 +1,6 @@
 # Updates and installer preparation
 
-This configuration does not publish a release. The **Prepare installers (no publishing)** workflow is manual only, has `contents: read`, and contains no tag, push, release creation or asset publication step. Ordinary CI continues producing development installers.
+The manual **Prepare or release installers** workflow builds Windows x64 and both Mac architectures. Leave `publish` disabled to prepare files only, or enable it to upload the complete artifact set to a draft release and then publish it. Publication runs only after every build succeeds. Ordinary CI continues producing development installers.
 
 ## In the app
 
@@ -36,9 +36,9 @@ Windows uses a per-user installation and a visible progress bar during updates. 
 
 ## Platform signing credentials
 
-Choose **development** to prepare updater-signed test packages with ad-hoc Mac signing and no Windows publisher signature. These files can show OS warnings and must not be published as production updates.
+Choose **development** to prepare updater-signed test packages with ad-hoc Mac signing and no Windows publisher signature. These files show OS warnings. Version 1.0.0 is distributed in this mode, with this limitation stated in the release notes.
 
-Choose **production** only after configuring the following repository Actions secrets. Missing credentials fail preparation. This mode still only prepares files; it cannot publish.
+Choose **production** only after configuring the following repository Actions secrets. Missing credentials fail preparation. The independent `publish` input controls publication.
 
 | Platform | Secrets |
 | --- | --- |
@@ -48,7 +48,7 @@ Choose **production** only after configuring the following repository Actions se
 
 The Mac build enables hardened runtime, signs, notarizes through Tauri, and verifies the bundle signature and stapled ticket. The Windows workflow imports the PFX into the temporary runner's current-user certificate store, signs with SHA-256 and an RFC 3161 timestamp, and verifies the installer signature. Modern hardware-backed or cloud Windows certificates generally cannot be exported as PFX; if your certificate uses one of those services, adapt the Windows signing step and Tauri `signCommand` to that provider before selecting production. Publisher signing does not guarantee that Windows SmartScreen immediately trusts a new application.
 
-No Apple account, certificate, paid signing service or repository secret has been created/configured by this code change.
+Apple and Windows publisher certificates are not configured for v1.0.0.
 
 ## Preparing files later
 
@@ -59,7 +59,7 @@ No Apple account, certificate, paid signing service or repository secret has bee
 
 The assembly step refuses incomplete platform sets, mixed versions, mismatched signing-key IDs, missing signatures or incorrect signed-version metadata. Cryptographic signature verification occurs in the app through the official updater before installation; assembly metadata checks are not a replacement for it.
 
-If publication is explicitly approved later, upload the tested production files together to a stable GitHub release tagged `v<version>`. `latest.json` points to that immutable tag's filenames. Publishing a new stable release without a valid `latest.json` breaks checks for installed users. Do not replace published artifacts with different bytes under the same version, and do not mark a partially uploaded release as latest. Nothing in this repository automatically performs this publication step.
+If publication is explicitly approved later, upload the tested production files together to a stable GitHub release tagged `v<version>`. `latest.json` points to that immutable tag's filenames. Publishing a new stable release without a valid `latest.json` breaks checks for installed users. Do not replace published artifacts with different bytes under the same version, and do not mark a partially uploaded release as latest. The manual workflow performs these steps when `publish` is enabled.
 
 For local Mac update-package validation only (no upload), set `TAURI_SIGNING_PRIVATE_KEY` to the absolute path of the local key and run:
 

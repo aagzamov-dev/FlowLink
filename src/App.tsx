@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   Check,
@@ -19,7 +19,8 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Device, Page, Snapshot, Run } from "./types";
 import { endpoint, sortedDevices } from "./layout";
-import { Badge, Brand } from "./components/common";
+import { Badge, Brand, Modal } from "./components/common";
+import { Latency } from "./components/Latency";
 import { AddressList } from "./components/AddressList";
 import { ManualConnect, Pairing } from "./components/Pairing";
 import { Devices } from "./features/Devices";
@@ -37,28 +38,52 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const pending = useRef(new Set<string>());
+  const [dirty, setDirty] = useState(false);
+  const [nextPage, setNextPage] = useState<Page | null>(null);
   const [manual, setManual] = useState(false);
   useEffect(() => {
     if (!isDesktop) return;
     let disposed = false;
+    let received = false;
     const events = listen<Snapshot>("engine-state", (event) => {
+      received = true;
       if (!disposed) setState(event.payload);
     });
-    const navigation = listen<string>("navigate", (event) => {
-      if (["devices", "displays", "settings"].includes(event.payload))
-        setPage(event.payload as Page);
-    });
-    void invoke<Snapshot>("snapshot")
+    void events
+      .then(() => invoke<Snapshot>("snapshot"))
       .then((value) => {
-        if (!disposed) setState(value);
+        if (!disposed && !received) setState(value);
       })
-      .catch((e: unknown) => setError(String(e)));
+      .catch((e: unknown) => {
+        if (!disposed) setError(String(e));
+      });
     return () => {
       disposed = true;
       void events.then((unlisten) => unlisten());
-      void navigation.then((unlisten) => unlisten());
     };
   }, []);
+  useEffect(() => {
+    if (!isDesktop) return;
+    const navigation = listen<string>("navigate", ({ payload }) => {
+      if (
+        !["devices", "displays", "settings"].includes(payload) ||
+        payload === page
+      )
+        return;
+      if (dirty) setNextPage(payload as Page);
+      else setPage(payload as Page);
+    });
+    return () => {
+      void navigation.then((unlisten) => unlisten());
+    };
+  }, [dirty, page]);
+  useEffect(() => {
+    if (!dirty) return;
+    const prevent = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", prevent);
+    return () => window.removeEventListener("beforeunload", prevent);
+  }, [dirty]);
   const run: Run = async <T,>(
     command: string,
     args?: Record<string, unknown>,
@@ -69,19 +94,31 @@ export default function App() {
       );
       return;
     }
+    if (pending.current.has(command)) return undefined;
+    pending.current.add(command);
     setError(null);
     setWorking(true);
     try {
-      return await invoke<T>(command, args);
+      const result = await invoke<T>(command, args);
+      const messages: Record<string, string> = {
+        save_settings: "Settings saved",
+        save_layout: "Display arrangement saved",
+        set_autostart: "Startup preference saved",
+        forget_device: "Device forgotten",
+      };
+      if (messages[command]) setNotice(messages[command]);
+      return result;
     } catch (e: unknown) {
       setError(String(e));
       return undefined;
     } finally {
-      setWorking(false);
+      pending.current.delete(command);
+      setWorking(pending.current.size > 0);
     }
   };
   const navigate = (next: Page) => {
     if (quick) void run("open_main", { page: next });
+    else if (next !== page && dirty) setNextPage(next);
     else setPage(next);
   };
   const copy = async (ip: string, withPort = false) => {
@@ -365,13 +402,25 @@ export default function App() {
               copy={copy}
             />
           )}
-          {page === "displays" && <Displays state={state} run={run} />}
+          {page === "displays" && (
+            <Displays
+              key={JSON.stringify([
+                state.connectedId,
+                state.controllerId,
+                state.displays,
+              ])}
+              state={state}
+              run={run}
+              onDirty={setDirty}
+            />
+          )}
           {page === "settings" && (
             <Preferences
               state={state}
               run={run}
               update={update}
               runUpdate={runUpdate}
+              onDirty={setDirty}
             />
           )}
         </div>
@@ -385,12 +434,33 @@ export default function App() {
           <span>
             {remote ? "Remote input active" : "Local control"}
             <span className="status-divider">·</span>
-            {state.latencyMs === null
-              ? "LAN / direct IP"
-              : `${state.latencyMs.toFixed(1)} ms round trip`}
+            <Latency />
           </span>
         </footer>
       </main>
+      {nextPage && (
+        <Modal title="Discard unsaved changes?" close={() => setNextPage(null)}>
+          <p>
+            Your edits have not been saved. Stay here to save them, or discard
+            them and continue.
+          </p>
+          <div className="modal-actions">
+            <button autoFocus onClick={() => setNextPage(null)}>
+              Keep editing
+            </button>
+            <button
+              className="danger"
+              onClick={() => {
+                setDirty(false);
+                setPage(nextPage);
+                setNextPage(null);
+              }}
+            >
+              Discard changes
+            </button>
+          </div>
+        </Modal>
+      )}
       {manual && (
         <ManualConnect
           run={run}
