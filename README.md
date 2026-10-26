@@ -53,7 +53,7 @@ Closing the window keeps FlowLink running in the menu bar or tray. Choose **Quit
 
 Start with **Automatic** network interface selection. For a VPN such as Kerio, enter the other computer’s reachable private IP if it does not appear under Nearby.
 
-FlowLink uses **TCP port 47831** by default. Working RDP confirms that an RDP route is available; FlowLink’s own port must also be permitted by your firewall/VPN policy. FlowLink does not change these policies.
+FlowLink uses **TCP port 47831** by default. If that port is occupied or reserved, it automatically selects an available port and advertises it to nearby devices. For manual connections, copy the full **IP and port** shown under **This computer**; a fallback port can change after restarting. Working RDP confirms that an RDP route is available; FlowLink’s own port must also be permitted by your firewall/VPN policy. FlowLink does not change these policies.
 
 After a network interruption, a trusted connection can reconnect automatically. Resume control explicitly once the connection is responsive. Clicking **Disconnect** stops automatic reconnect until you connect manually or restart the app.
 

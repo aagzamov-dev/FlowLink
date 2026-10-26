@@ -483,36 +483,44 @@ async fn listeners_accept_ipv4_and_ipv6_on_the_same_port() {
 }
 
 #[tokio::test]
-async fn listener_recovers_after_port_conflict_and_releases_port_on_shutdown() {
+async fn listener_uses_available_port_on_conflict_and_releases_it_on_shutdown() {
     let blocker = bind_listener("0.0.0.0:0".parse().unwrap()).unwrap();
     let port = blocker.local_addr().unwrap().port();
     let (engine, _rx) = fixture(true);
     let task = tokio::spawn(engine.clone().listen(port));
     timeout(Duration::from_secs(2), async {
-        while engine.snapshot().error.is_none() {
+        while engine.snapshot().port == 0 {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    assert!(engine
-        .snapshot()
-        .error
-        .unwrap()
-        .contains("Retrying automatically"));
-    drop(blocker);
-    timeout(Duration::from_secs(5), async {
-        while engine.snapshot().error.is_some() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(bind_listener(SocketAddr::from(([0, 0, 0, 0], port))).is_err());
+    let selected = engine.snapshot().port;
+    assert_ne!(selected, port);
+    assert!(engine.snapshot().error.is_none());
+    assert!(TcpStream::connect(("127.0.0.1", selected)).await.is_ok());
+    assert!(bind_listener(SocketAddr::from(([0, 0, 0, 0], selected))).is_err());
     engine.shutdown();
     timeout(Duration::from_secs(2), task)
         .await
         .unwrap()
         .unwrap();
-    assert!(bind_listener(SocketAddr::from(([0, 0, 0, 0], port))).is_ok());
+    assert!(bind_listener(SocketAddr::from(([0, 0, 0, 0], selected))).is_ok());
+    // The conflicting listener remains owned by its original process.
+    assert_eq!(blocker.local_addr().unwrap().port(), port);
+}
+
+#[tokio::test]
+async fn listener_keeps_preferred_port_when_available() {
+    let reservation = bind_listener("0.0.0.0:0".parse().unwrap()).unwrap();
+    let preferred = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let listener = bind_available_listener(preferred).unwrap();
+    assert_eq!(listener.local_addr().unwrap().port(), preferred);
+    let (client, accepted) = tokio::join!(
+        TcpStream::connect(("127.0.0.1", preferred)),
+        timeout(Duration::from_secs(2), listener.accept()),
+    );
+    assert!(client.is_ok());
+    assert!(accepted.unwrap().is_ok());
 }

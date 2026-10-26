@@ -84,29 +84,28 @@ impl Engine {
                         break;
                     }
                     let settings = engine.store.settings();
-                    let addresses = engine
-                        .state
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .addresses
-                        .clone();
+                    let (addresses, port) = {
+                        let state = engine.state.lock().unwrap_or_else(|e| e.into_inner());
+                        (state.addresses.clone(), state.port)
+                    };
                     let registration = (
                         settings.device_name,
                         settings.interface,
                         engine.busy.load(Ordering::SeqCst),
                         addresses,
+                        port,
                     );
                     if discovery.is_none() || advertised.as_ref() != Some(&registration) {
                         discovery = None;
-                        let (name, interface, busy, addresses) = &registration;
+                        let (name, interface, busy, addresses, port) = &registration;
                         match Discovery::new(
                             &engine.store.identity.id,
                             name,
                             std::env::consts::OS,
-                            true,
                             *busy,
                             interface.as_deref(),
                             addresses,
+                            *port,
                         ) {
                             Ok(d) => {
                                 discovery = Some(d);
@@ -203,7 +202,7 @@ impl Engine {
                     })
                     .collect(),
                 addresses: discovery::addresses(),
-                port: PORT,
+                port: 0,
                 displays,
                 placements: Vec::new(),
                 connected_id: None,
@@ -1091,12 +1090,19 @@ impl Engine {
         )
         .await
     }
-    async fn listen(self: Arc<Self>, port: u16) {
+    async fn listen(self: Arc<Self>, mut port: u16) {
         let mut last_error = None;
         while !self.shutdown.load(Ordering::SeqCst) {
-            let result = match bind_listener(([0, 0, 0, 0], port).into()) {
-                Ok(listener) => {
+            let bound = bind_available_listener(port).and_then(|listener| {
+                let selected = listener.local_addr()?.port();
+                Ok((listener, selected))
+            });
+            let result = match bound {
+                Ok((listener, selected)) => {
+                    // Retain the selected port for retries and publish the actual endpoint.
+                    port = selected;
                     self.update(|s| {
+                        s.port = port;
                         if last_error.is_some() && s.error == last_error {
                             s.error = None;
                         }
@@ -1112,7 +1118,10 @@ impl Engine {
             }
             if let Err(error) = result {
                 let message = format!("Cannot listen on TCP port {port}: {error}. Retrying automatically every 2 seconds");
-                self.error(message.clone());
+                self.update(|s| {
+                    s.port = 0;
+                    s.error = Some(message.clone());
+                });
                 last_error = Some(message);
             }
             tokio::select! {
@@ -2302,4 +2311,21 @@ fn bind_listener(address: SocketAddr) -> std::io::Result<TcpListener> {
     socket.bind(&address.into())?;
     socket.listen(128)?;
     TcpListener::from_std(socket.into())
+}
+
+fn bind_available_listener(port: u16) -> std::io::Result<TcpListener> {
+    match bind_listener(([0, 0, 0, 0], port).into()) {
+        Err(error)
+            if port != 0
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                ) =>
+        {
+            // Windows can reserve ports without exposing a competing listener.
+            // Ask the OS for a free port instead of sharing another process's socket.
+            bind_listener(([0, 0, 0, 0], 0).into())
+        }
+        result => result,
+    }
 }

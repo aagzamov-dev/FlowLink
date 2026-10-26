@@ -1,5 +1,5 @@
 use crate::{
-    model::{Address, Device, PORT},
+    model::{Address, Device},
     Result,
 };
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -63,10 +63,10 @@ impl Discovery {
         id: &str,
         name: &str,
         os: &str,
-        receiver: bool,
         busy: bool,
         interface: Option<&str>,
         addresses: &[Address],
+        port: u16,
     ) -> Result<Self> {
         let daemon = ServiceDaemon::new()?;
         let local = addresses
@@ -82,7 +82,7 @@ impl Discovery {
             daemon.enable_interface(IfKind::Name(name))?;
         }
         let events = daemon.browse(SERVICE)?;
-        let registration = if receiver {
+        let registration = if port != 0 {
             let properties = HashMap::from([
                 ("id".into(), id.into()),
                 ("name".into(), name.into()),
@@ -99,7 +99,7 @@ impl Discovery {
                 &id[..16],
                 &format!("flowlink-{}.local.", &id[..16]),
                 ips.as_slice(),
-                PORT,
+                port,
                 Some(properties),
             )?;
             let full = service.get_fullname().to_string();
