@@ -1,3 +1,17 @@
+FlowLink 1.0.1 — connection fixes
+
+- Prevent the Connect action from crashing when invoked from the desktop UI.
+- Retry a failed TCP listener every two seconds and clear its error after recovery.
+- Use separate IPv4 and IPv6 listeners without overlapping address families.
+- Release listening sockets when the engine shuts down.
+- Reject invalid connection addresses before changing connection state.
+
+macOS builds are ad-hoc signed and not notarized. Windows publisher signing is not configured. These fixes do not establish the original cause of the reported Windows bind failure; persistent failures retain the OS error for diagnosis.
+
+Install the patched version on both computers. Physical Mac-to-Windows connection acceptance testing is still required.
+
+---
+
 FlowLink 1.0.0
 
 - Control Windows from Mac or Mac from Windows, with a choice of main device.

@@ -443,3 +443,76 @@ fn switch_shortcut_waits_for_the_arrow_key_as_well_as_modifiers() {
     assert!(matches!(rx.try_recv().unwrap(), Message::Handoff { .. }));
     assert!(!engine.switch_requested.load(Ordering::SeqCst));
 }
+
+#[test]
+fn connect_without_runtime_returns_error_without_changing_state() {
+    let (engine, _rx) = fixture(true);
+    let before = engine.snapshot();
+    let error = engine.connect("192.168.1.2".into()).unwrap_err();
+    assert!(error.to_string().contains("runtime unavailable"));
+    assert!(!engine.busy.load(Ordering::SeqCst));
+    assert_eq!(engine.snapshot(), before);
+}
+
+#[tokio::test]
+async fn invalid_connection_address_does_not_start_pairing() {
+    let (engine, _rx) = fixture(true);
+    let before = engine.snapshot();
+    assert!(engine.connect("".into()).is_err());
+    assert!(!engine.busy.load(Ordering::SeqCst));
+    assert_eq!(engine.snapshot(), before);
+}
+
+#[tokio::test]
+async fn listeners_accept_ipv4_and_ipv6_on_the_same_port() {
+    let ipv4 = bind_listener("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = ipv4.local_addr().unwrap().port();
+    let ipv6 = bind_listener(SocketAddr::from(([0u16; 8], port))).unwrap();
+    let (client4, accepted4) = tokio::join!(
+        TcpStream::connect(("127.0.0.1", port)),
+        timeout(Duration::from_secs(2), ipv4.accept()),
+    );
+    assert!(client4.is_ok());
+    assert!(accepted4.unwrap().is_ok());
+    let (client6, accepted6) = tokio::join!(
+        TcpStream::connect(("::1", port)),
+        timeout(Duration::from_secs(2), ipv6.accept()),
+    );
+    assert!(client6.is_ok());
+    assert!(accepted6.unwrap().is_ok());
+}
+
+#[tokio::test]
+async fn listener_recovers_after_port_conflict_and_releases_port_on_shutdown() {
+    let blocker = bind_listener("0.0.0.0:0".parse().unwrap()).unwrap();
+    let port = blocker.local_addr().unwrap().port();
+    let (engine, _rx) = fixture(true);
+    let task = tokio::spawn(engine.clone().listen(port));
+    timeout(Duration::from_secs(2), async {
+        while engine.snapshot().error.is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(engine
+        .snapshot()
+        .error
+        .unwrap()
+        .contains("Retrying automatically"));
+    drop(blocker);
+    timeout(Duration::from_secs(5), async {
+        while engine.snapshot().error.is_some() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(bind_listener(SocketAddr::from(([0, 0, 0, 0], port))).is_err());
+    engine.shutdown();
+    timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bind_listener(SocketAddr::from(([0, 0, 0, 0], port))).is_ok());
+}

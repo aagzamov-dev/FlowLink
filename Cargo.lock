@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "flowlink"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "flowlink-engine",
  "serde",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "flowlink-engine"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "hex",
  "hmac",
@@ -1167,6 +1167,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "spake2",
  "thiserror 2.0.21",
  "tokio",

@@ -62,7 +62,7 @@ fn save_download(app: &tauri::AppHandle, kind: &str, data: &str) -> CommandResul
     Ok(path.to_string_lossy().into_owned())
 }
 #[tauri::command]
-fn connect(state: tauri::State<AppState>, address: String) -> CommandResult<()> {
+async fn connect(state: tauri::State<'_, AppState>, address: String) -> CommandResult<()> {
     state.0.connect(address).map_err(|e| e.to_string())
 }
 #[tauri::command]

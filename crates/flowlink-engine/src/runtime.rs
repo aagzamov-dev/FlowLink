@@ -172,9 +172,7 @@ impl Engine {
         {
             let engine_clone = engine.clone();
             tokio::spawn(async move {
-                if let Err(e) = engine_clone.clone().listen().await {
-                    engine_clone.error(format!("Cannot listen on port {PORT}: {e}"));
-                }
+                engine_clone.listen(PORT).await;
             });
         }
         Ok(engine)
@@ -779,6 +777,9 @@ impl Engine {
         })
     }
     pub fn connect(self: &Arc<Self>, address: String) -> Result<()> {
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|_| "Connection runtime unavailable. Restart FlowLink and try again")?;
+        normalize_address(&address)?;
         if self
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -793,7 +794,7 @@ impl Engine {
         });
         let engine = self.clone();
         let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
-        tokio::spawn(async move {
+        runtime.spawn(async move {
             let result = engine.clone().connect_inner(address, attempt).await;
             engine.finish_connection(result);
         });
@@ -1090,12 +1091,56 @@ impl Engine {
         )
         .await
     }
-    async fn listen(self: Arc<Self>) -> Result<()> {
-        let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
-        let listener6 = TcpListener::bind(("::", PORT)).await.ok();
+    async fn listen(self: Arc<Self>, port: u16) {
+        let mut last_error = None;
+        while !self.shutdown.load(Ordering::SeqCst) {
+            let result = match bind_listener(([0, 0, 0, 0], port).into()) {
+                Ok(listener) => {
+                    self.update(|s| {
+                        if last_error.is_some() && s.error == last_error {
+                            s.error = None;
+                        }
+                    });
+                    last_error = None;
+                    let listener6 = bind_listener(SocketAddr::from(([0u16; 8], port))).ok();
+                    self.clone().accept_connections(listener, listener6).await
+                }
+                Err(error) => Err(error.into()),
+            };
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Err(error) = result {
+                let message = format!("Cannot listen on TCP port {port}: {error}. Retrying automatically every 2 seconds");
+                self.error(message.clone());
+                last_error = Some(message);
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {},
+                _ = self.cancel.notified() => {},
+            }
+        }
+    }
+    async fn accept_connections(
+        self: Arc<Self>,
+        listener: TcpListener,
+        listener6: Option<TcpListener>,
+    ) -> Result<()> {
         let handshakes = Arc::new(tokio::sync::Semaphore::new(8));
         loop {
-            let (mut stream, peer) = tokio::select! {result=listener.accept()=>result?,result=async{match &listener6{Some(listener)=>listener.accept().await,None=>std::future::pending().await}}=>result?};
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            let (mut stream, peer) = tokio::select! {
+                result = listener.accept() => result?,
+                result = async {
+                    match &listener6 {
+                        Some(listener) => listener.accept().await,
+                        None => std::future::pending().await,
+                    }
+                } => result?,
+                _ = self.cancel.notified() => continue,
+            };
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
             }
@@ -2240,4 +2285,21 @@ async fn connect_routes(routes: Vec<(SocketAddr, Option<SocketAddr>)>) -> Result
         }
     }
     Err("Device unreachable. Check its IP address, TCP port 47831, and LAN/VPN access".into())
+}
+
+fn bind_listener(address: SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(address),
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&address.into())?;
+    socket.listen(128)?;
+    TcpListener::from_std(socket.into())
 }

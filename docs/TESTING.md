@@ -138,3 +138,11 @@ Additional manual checks for this pass:
 4. Export preferences to Downloads, change input preferences, and import the backup. Review before saving. Reject future-version, oversized, malformed, invalid-key, and duplicate-rule files. Preserve device name, trust, pause, local-input policy, network interface, diagnostics, updates, and autostart.
 5. Enable and save diagnostics, then export a report. Verify the file opens as JSON, contains no names/addresses/codes/typed input, and never replaces an existing file. Disable diagnostics and confirm native export is rejected.
 6. Test pairing countdown in approval/code-entry/code-display stages. Expired codes must not be submitted or displayed as usable. A failed native submission must allow recovery; closing must cancel the outstanding request.
+
+## 1.0.1 connection fixes
+
+- 63 Rust tests and 30 frontend/release-tool tests passed locally on macOS.
+- Added coverage for missing-runtime calls, invalid-address state preservation, simultaneous IPv4/IPv6 listeners, port-conflict recovery, and listener shutdown.
+- TypeScript, ESLint, Clippy, formatting, and the macOS app/DMG build passed; bundle signature and DMG integrity verified.
+- The packaged 1.0.1 app opened successfully. UI automation could not complete the Connect smoke test because the computer-use session became unavailable.
+- Accessibility/Input Monitoring were not granted to this build. Real Mac/Windows pairing and input sharing remain unverified; Windows needs the shared fixes too.
