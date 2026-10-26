@@ -1,26 +1,14 @@
-FlowLink 1.0.1 — connection fixes
+FlowLink 1.1.0 — input responsiveness and keyboard mappings
 
-- Prevent the Connect action from crashing when invoked from the desktop UI.
-- Retry a failed TCP listener every two seconds and clear its error after recovery.
-- Use separate IPv4 and IPv6 listeners without overlapping address families.
-- Release listening sockets when the engine shuts down.
-- Reject invalid connection addresses before changing connection state.
+- Combine queued incoming mouse movement before native injection, preserving displacement and click/key ordering.
+- Enumerate local interfaces once per connection route selection.
+- Add configurable Command ↔ Ctrl, Option ↔ Win, Control ↔ Alt mappings, including right-side modifiers.
+- Preserve existing saved keyboard modes; select Settings → Keyboard preset → Custom modifier keys to enable the new mapping. New installations use it by default.
+- Show which computer is paused and reconcile peer pause status through heartbeats.
+- Include the Connect crash fix, automatic listener recovery, and fallback to a free TCP port when the default port is unavailable.
 
-macOS builds are ad-hoc signed and not notarized. Windows publisher signing is not configured. These fixes do not establish the original cause of the reported Windows bind failure; persistent failures retain the OS error for diagnosis.
+Update both computers to 1.1.0 before connecting. This version uses protocol 3 and cannot connect to 1.0.x.
 
-Install the patched version on both computers. Physical Mac-to-Windows connection acceptance testing is still required.
+Windows installers are unsigned. macOS builds are ad-hoc signed and not notarized. Operating-system security warnings may appear. Updater packages are cryptographically signed.
 
----
-
-FlowLink 1.0.0
-
-- Control Windows from Mac or Mac from Windows, with a choice of main device.
-- Customize directional shortcuts and tune pointer and touchpad scrolling.
-- Recover local input after stalled connections and reconnect over permitted LAN/VPN routes.
-- Check for verified app updates, download them, and install when you are ready.
-- Follow a setup checklist and connection guidance, record shortcut combinations, and protect unsaved edits.
-- Export/import portable input preferences and save opt-in redacted diagnostic health reports.
-- Reduce redundant discovery scans, UI state traffic, and input frame allocations; retain the existing input ordering and recovery rules.
-
-Install matching versions on both computers. Version 1.0 cannot connect to 0.1.
-These installers are not publisher-signed: Windows may show an unknown-publisher warning; macOS builds are ad-hoc signed and not notarized. Updater packages are cryptographically signed. Physical Mac/Windows, VPN, installation and update acceptance testing remains outstanding.
+Automated regression checks pass locally; physical Mac/Windows performance, shortcut and input acceptance testing remains outstanding. Latency improvements have not been measured on physical device pairs.

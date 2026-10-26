@@ -147,6 +147,7 @@ export function Preferences({
             >
               <option value="windowsFamiliar">Adapt editing shortcuts</option>
               <option value="macNative">Physical keys</option>
+              <option value="customModifiers">Custom modifier keys</option>
             </select>
           </label>
           <div className="setting-explanation">
@@ -154,6 +155,36 @@ export function Preferences({
             to Ctrl on Windows for enabled editing keys. Mac terminal exceptions
             preserve Control. Physical keys forwards the original keys.
           </div>
+          {draft.preset === "customModifiers" && (
+            <div className="padded">
+              <p>
+                Map Mac modifiers to Windows keys in both directions. Shift
+                stays Shift. Explicit shortcut rules take priority.
+              </p>
+              {(["command", "option", "control"] as const).map((key) => (
+                <label className="field" key={key}>
+                  Mac {key} ↔ Windows
+                  <select
+                    value={draft.modifierMapping[key]}
+                    onChange={(event) => {
+                      const value = Number(event.target.value) as 1 | 4 | 8;
+                      const mapping = { ...draft.modifierMapping };
+                      const other = (
+                        ["command", "option", "control"] as const
+                      ).find((candidate) => mapping[candidate] === value);
+                      if (other) mapping[other] = mapping[key];
+                      mapping[key] = value;
+                      patch("modifierMapping", mapping);
+                    }}
+                  >
+                    <option value={1}>Ctrl</option>
+                    <option value={4}>Alt</option>
+                    <option value={8}>Win</option>
+                  </select>
+                </label>
+              ))}
+            </div>
+          )}
           <label className="field padded">
             Terminal exceptions
             <small>
@@ -503,6 +534,7 @@ export function Preferences({
                         languageSwitch: settings.languageSwitch,
                         hotkeyOnly: settings.hotkeyOnly,
                         bindings: settings.bindings,
+                        modifierMapping: settings.modifierMapping,
                         edgeResistanceMs: settings.edgeResistanceMs,
                         emergencyKey: settings.emergencyKey,
                       }));

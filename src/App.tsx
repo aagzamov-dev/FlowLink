@@ -173,13 +173,15 @@ export default function App() {
           <div>
             <strong>{connected?.name ?? "Ready when you are"}</strong>
             <small>
-              {paused
-                ? "Sharing paused"
-                : remote
-                  ? "Remote input active"
-                  : state.connectedId
-                    ? "Connected · local input"
-                    : "Choose a computer below"}
+              {state.settings.paused
+                ? "Paused on this computer"
+                : state.peerPaused
+                  ? "Paused on the other computer"
+                  : remote
+                    ? "Remote input active"
+                    : state.connectedId
+                      ? "Connected · local input"
+                      : "Choose a computer below"}
             </small>
           </div>
         </div>
@@ -342,11 +344,13 @@ export default function App() {
               : state.settings.deviceName}
           </span>
           <Badge active={!!state.connectedId && !paused}>
-            {paused
-              ? "Paused"
-              : state.connectedId
-                ? "Connected"
-                : "Not connected"}
+            {state.settings.paused
+              ? "Paused here"
+              : state.peerPaused
+                ? "Other computer paused"
+                : state.connectedId
+                  ? "Connected"
+                  : "Not connected"}
           </Badge>
         </div>
         <div className="page-content">

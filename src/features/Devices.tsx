@@ -72,12 +72,16 @@ export function Devices({
           </span>
         </div>
         <div className="connection-copy">
-          <Badge active={!!connected}>
+          <Badge
+            active={!!connected && !state.settings.paused && !state.peerPaused}
+          >
             {state.settings.paused
-              ? "Paused"
-              : connected
-                ? "Connected securely"
-                : "A little less switching"}
+              ? "Paused on this computer"
+              : state.peerPaused
+                ? "Paused on the other computer"
+                : connected
+                  ? "Connected securely"
+                  : "A little less switching"}
           </Badge>
           <h2>
             {connected
@@ -85,15 +89,21 @@ export function Devices({
               : "Two computers. One smooth flow."}
           </h2>
           <p>
-            {connected
-              ? state.ownership === "remote"
-                ? isMain
-                  ? "Your keyboard and pointer control the other computer."
-                  : "The other computer is controlling this device."
-                : isMain
-                  ? "This is the main device. Switch control using a screen edge or the button below."
-                  : "This device receives input. You can change the main device below."
-              : "Open FlowLink on both computers. Select a nearby device or enter its IP address."}
+            {state.settings.paused
+              ? connected
+                ? "Sharing is paused here and on the connected computer."
+                : "Sharing is paused on this computer."
+              : state.peerPaused
+                ? "Sharing is paused on the other computer. Resume there to continue."
+                : connected
+                  ? state.ownership === "remote"
+                    ? isMain
+                      ? "Your keyboard and pointer control the other computer."
+                      : "The other computer is controlling this device."
+                    : isMain
+                      ? "This is the main device. Switch control using a screen edge or the button below."
+                      : "This device receives input. You can change the main device below."
+                  : "Open FlowLink on both computers. Select a nearby device or enter its IP address."}
           </p>
           <div className="card-actions">
             {connected ? (

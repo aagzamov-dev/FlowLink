@@ -108,6 +108,7 @@ pub enum Message {
     },
     Heartbeat {
         nonce: u64,
+        paused: bool,
     },
     Pong {
         nonce: u64,
@@ -170,12 +171,21 @@ mod tests {
     #[tokio::test]
     async fn frames_roundtrip() {
         let (mut a, mut b) = tokio::io::duplex(256);
-        write(&mut a, &Message::Heartbeat { nonce: 5 })
-            .await
-            .unwrap();
+        write(
+            &mut a,
+            &Message::Heartbeat {
+                nonce: 5,
+                paused: false,
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             read::<Message>(&mut b).await.unwrap(),
-            Message::Heartbeat { nonce: 5 }
+            Message::Heartbeat {
+                nonce: 5,
+                paused: false
+            }
         ));
     }
     #[tokio::test]
@@ -184,13 +194,22 @@ mod tests {
         let mut write_buffer = Vec::new();
         let mut read_buffer = Vec::new();
         for nonce in [u64::MAX, 1, 1000000, 0] {
-            write_buffered(&mut a, &Message::Heartbeat { nonce }, &mut write_buffer)
-                .await
-                .unwrap();
+            write_buffered(
+                &mut a,
+                &Message::Heartbeat {
+                    nonce,
+                    paused: false,
+                },
+                &mut write_buffer,
+            )
+            .await
+            .unwrap();
             let message = read_buffered::<Message>(&mut b, &mut read_buffer)
                 .await
                 .unwrap();
-            assert!(matches!(message, Message::Heartbeat { nonce: actual } if actual == nonce));
+            assert!(
+                matches!(message, Message::Heartbeat { nonce: actual, paused: false } if actual == nonce)
+            );
         }
         assert!(write_buffer.capacity() >= write_buffer.len());
         a.write_u32((MAX_FRAME + 1) as u32).await.unwrap();

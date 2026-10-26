@@ -908,6 +908,8 @@ impl Engine {
         }
         let mut attempts = Vec::new();
         let settings = self.store.settings();
+        let interfaces = if_addrs::get_if_addrs().unwrap_or_default();
+        let local_addresses = discovery::addresses();
         for endpoint in endpoints {
             if self.attempt.load(Ordering::SeqCst) != attempt_id {
                 return Err("Connection cancelled".into());
@@ -918,9 +920,8 @@ impl Engine {
                 .into_iter()
                 .find(|t| t.device.addresses.contains(&endpoint.ip().to_string()))
                 .and_then(|t| t.last_local_ip);
-            let interfaces = if_addrs::get_if_addrs().unwrap_or_default();
-            let mut local = discovery::addresses()
-                .into_iter()
+            let mut local = local_addresses
+                .iter()
                 .filter(|a| {
                     settings
                         .interface
@@ -1554,6 +1555,7 @@ impl Engine {
         let mut last = Instant::now();
         let started = Instant::now();
         let mut expected_sequence = 0;
+        let mut pending_input = None;
         let mut rate_count = 0u32;
         let mut rate_start = Instant::now();
         let result: Result<()> = async {
@@ -1568,12 +1570,31 @@ impl Engine {
                         if expired { self.return_local(); }
                         if last.elapsed() > Duration::from_secs(5) { return Err("Connection timed out; input returned locally".into()); }
                         if !self.store.trusted().iter().any(|t| t.device.id == id) { return Err("Device trust revoked".into()); }
-                        tx.try_send(Message::Heartbeat { nonce: started.elapsed().as_micros() as u64 })?;
+                        tx.try_send(Message::Heartbeat { nonce: started.elapsed().as_micros() as u64, paused: self.store.settings().paused })?;
                     }
-                    message = incoming.recv() => {
-                        let message = message.ok_or("Connection closed")??;
+                    message = async { match pending_input.take() {
+                        Some(message) => Some(message),
+                        None => incoming.recv().await,
+                    }} => {
+                        let mut message = message.ok_or("Connection closed")??;
                         last = Instant::now();
                         rate_count += 1;
+                        if let Message::Input { token, sequence, event: crate::input::Input::Motion { .. } } = &message {
+                            let token = *token;
+                            if *sequence > expected_sequence {
+                                for _ in 0..63 {
+                                    let Ok(next) = incoming.try_recv() else { break; };
+                                    if let Ok(next_message) = &next {
+                                        if coalesce_message(&mut message, next_message, token) {
+                                            rate_count += 1;
+                                            continue;
+                                        }
+                                    }
+                                    pending_input = Some(next);
+                                    break;
+                                }
+                            }
+                        }
                         if rate_start.elapsed() >= Duration::from_secs(1) { rate_start = Instant::now(); rate_count = 0; }
                         if rate_count > 16000 { return Err("Peer message rate exceeded".into()); }
                         if !self.process_message(message, controller, &id, &tx, started, &mut expected_sequence)? { break; }
@@ -1632,7 +1653,8 @@ impl Engine {
                     s.status = "Displays changed · review arrangement".into();
                 });
             }
-            Message::Heartbeat { nonce } => {
+            Message::Heartbeat { nonce, paused } => {
+                self.set_peer_paused(paused);
                 tx.try_send(Message::Pong { nonce })?;
             }
             Message::Pong { nonce } => {
@@ -1648,17 +1670,8 @@ impl Engine {
             Message::Identify => {
                 self.identify_requested.store(true, Ordering::SeqCst);
             }
-            Message::Pause => {
-                self.native.release();
-                self.update(|s| s.peer_paused = true);
-                self.ownership(Ownership::Paused);
-            }
-            Message::Resume => {
-                self.update(|s| s.peer_paused = false);
-                if !self.store.settings().paused {
-                    self.ownership(Ownership::Local);
-                }
-            }
+            Message::Pause => self.set_peer_paused(true),
+            Message::Resume => self.set_peer_paused(false),
             Message::Release { token } => {
                 if token == self.current_token() {
                     self.native.release();
@@ -1884,6 +1897,20 @@ impl Engine {
             _ => return Err("Unexpected message for this device role".into()),
         }
         Ok(true)
+    }
+    fn set_peer_paused(&self, paused: bool) {
+        let changed = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let changed = state.peer_paused != paused;
+            state.peer_paused = paused;
+            changed
+        };
+        if changed {
+            if paused {
+                self.native.release();
+            }
+            self.ownership(self.idle_ownership());
+        }
     }
     fn native_event(&self, event: NativeEvent) {
         let _operation = self.operation.lock().unwrap_or_else(|e| e.into_inner());
@@ -2256,7 +2283,12 @@ fn coalesce_message(current: &mut Message, next: &Message, token: ControlToken) 
         },
     ) = (current, next)
     {
-        if *next_token == token && event.merge_motion(next_event) {
+        if *next_token == token
+            && *next_sequence > *sequence
+            && event.valid()
+            && next_event.valid()
+            && event.merge_motion(next_event)
+        {
             *sequence = *next_sequence;
             return true;
         }

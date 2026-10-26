@@ -6,6 +6,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Input {
     Motion {
@@ -269,6 +270,7 @@ pub struct ShortcutMapper {
     emitted_modifiers: HashSet<u16>,
     menu_used: u8,
     menu_deferred: u8,
+    custom_modifiers: bool,
 }
 impl ShortcutMapper {
     pub fn map(
@@ -279,6 +281,7 @@ impl ShortcutMapper {
         direction: crate::model::Direction,
         terminal: bool,
     ) -> Vec<Input> {
+        self.custom_modifiers = settings.preset == Preset::CustomModifiers;
         let mut output = Vec::new();
         let was_emitted = self.emitted_modifiers.contains(&scan);
         let menu_held = self
@@ -349,8 +352,16 @@ impl ShortcutMapper {
         let physical_mask = self.physical.iter().fold(0, |m, s| m | modifier(*s));
         let removed = self.mapped.values().fold(0, |m, (_, source, _)| m | source);
         let added = self.mapped.values().fold(0, |m, (_, _, target)| m | target);
-        let desired_mask = (physical_mask & !removed) | added;
-        let defer_menu = direction == crate::model::Direction::MacToWindows;
+        let translate = |mask| {
+            if self.custom_modifiers {
+                settings.modifier_mapping.translate(mask, direction)
+            } else {
+                mask
+            }
+        };
+        let desired_mask = translate(physical_mask & !removed) | added;
+        let defer_menu =
+            direction == crate::model::Direction::MacToWindows && !self.custom_modifiers;
         if down && modifier(scan) == 0 {
             self.menu_deferred = (self.menu_deferred & !menu_held) | (menu_held & !desired_mask);
         }
@@ -359,6 +370,21 @@ impl ShortcutMapper {
             .iter()
             .copied()
             .filter(|s| modifier(*s) != 0 && modifier(*s) & removed == 0)
+            .map(|s| {
+                if !self.custom_modifiers || modifier(s) == 2 {
+                    return s;
+                }
+                let right = matches!(s, 0x11d | 0x138 | 0x15c);
+                match (translate(modifier(s)), right) {
+                    (1, false) => 0x1d,
+                    (1, true) => 0x11d,
+                    (4, false) => 0x38,
+                    (4, true) => 0x138,
+                    (8, false) => 0x15b,
+                    (8, true) => 0x15c,
+                    _ => s,
+                }
+            })
             .collect::<HashSet<_>>();
         for (bit, key) in [(1, 0x1d), (2, 0x2a), (4, 0x38), (8, 0x15b)] {
             if desired_mask & bit != 0 && !desired.iter().any(|s| modifier(*s) == bit) {
@@ -411,6 +437,9 @@ impl ShortcutMapper {
         output
     }
     pub fn pointer_modifiers(&mut self) -> Vec<u16> {
+        if self.custom_modifiers {
+            return Vec::new();
+        }
         self.menu_used |= 12;
         self.menu_deferred = 0;
         let pending = self
@@ -467,7 +496,10 @@ mod mapping_tests {
     #[test]
     fn terminal_control_copy_stays_control_until_key_up() {
         let mut mapper = ShortcutMapper::default();
-        let settings = Settings::default();
+        let settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         mapper.map(0x1d, true, &settings, Direction::WindowsToMac, true);
         let down = mapper.map(0x2e, true, &settings, Direction::WindowsToMac, true);
         assert!(matches!(
@@ -497,7 +529,10 @@ mod mapping_tests {
     #[test]
     fn exact_modifiers_preserve_altgr_combinations() {
         let mut mapper = ShortcutMapper::default();
-        let settings = Settings::default();
+        let settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         mapper.map(0x1d, true, &settings, Direction::WindowsToMac, false);
         mapper.map(0x138, true, &settings, Direction::WindowsToMac, false);
         let output = mapper.map(0x2e, true, &settings, Direction::WindowsToMac, false);
@@ -508,7 +543,10 @@ mod mapping_tests {
     #[test]
     fn command_copy_never_sends_a_standalone_windows_key() {
         let mut mapper = ShortcutMapper::default();
-        let settings = Settings::default();
+        let settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         let output = [(0x15b, true), (0x2e, true), (0x2e, false), (0x15b, false)]
             .into_iter()
             .flat_map(|(scan, down)| {
@@ -544,7 +582,10 @@ mod mapping_tests {
     #[test]
     fn custom_option_shortcut_does_not_activate_windows_menus() {
         let mut mapper = ShortcutMapper::default();
-        let mut settings = Settings::default();
+        let mut settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         settings.bindings.push(ShortcutBinding {
             direction: Direction::MacToWindows,
             source_key: 0x2e,
@@ -570,7 +611,10 @@ mod mapping_tests {
     #[test]
     fn deferred_windows_modifier_is_forwarded_before_a_pointer_click() {
         let mut mapper = ShortcutMapper::default();
-        let settings = Settings::default();
+        let settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         mapper.map(0x15b, true, &settings, Direction::MacToWindows, false);
         assert_eq!(mapper.pointer_modifiers(), vec![0x15b]);
         assert!(mapper.pointer_modifiers().is_empty());
@@ -586,7 +630,10 @@ mod mapping_tests {
     #[test]
     fn shift_command_copy_preserves_shift_without_sending_windows_key() {
         let mut mapper = ShortcutMapper::default();
-        let settings = Settings::default();
+        let settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         let output = [
             (0x2a, true),
             (0x15c, true),
@@ -623,7 +670,10 @@ mod mapping_tests {
     #[test]
     fn custom_target_survives_settings_change_until_key_up() {
         let mut mapper = ShortcutMapper::default();
-        let mut settings = Settings::default();
+        let mut settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         settings.bindings.push(ShortcutBinding {
             direction: Direction::WindowsToMac,
             source_key: 0x2e,
@@ -660,7 +710,10 @@ mod mapping_tests {
     }
     #[test]
     fn conflicting_custom_rules_are_rejected() {
-        let mut settings = Settings::default();
+        let mut settings = Settings {
+            preset: Preset::WindowsFamiliar,
+            ..Settings::default()
+        };
         let rule = ShortcutBinding {
             direction: Direction::WindowsToMac,
             source_key: 30,
@@ -670,5 +723,134 @@ mod mapping_tests {
         };
         settings.bindings = vec![rule.clone(), rule];
         assert!(settings.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod modifier_mapping_tests {
+    use super::*;
+    use crate::model::{Direction, ModifierMapping};
+
+    #[test]
+    fn modifiers_map_both_directions_and_release_without_stuck_keys() {
+        let settings = Settings::default();
+        for (mac, windows) in [
+            (0x15b, 0x1d),
+            (0x38, 0x15b),
+            (0x1d, 0x38),
+            (0x15c, 0x11d),
+            (0x138, 0x15c),
+            (0x11d, 0x138),
+        ] {
+            for (direction, source, target) in [
+                (Direction::MacToWindows, mac, windows),
+                (Direction::WindowsToMac, windows, mac),
+            ] {
+                let mut mapper = ShortcutMapper::default();
+                assert_eq!(
+                    mapper.map(source, true, &settings, direction, false),
+                    vec![Input::Key {
+                        scan: target,
+                        down: true
+                    }]
+                );
+                assert_eq!(
+                    mapper.map(0x2e, true, &settings, direction, false),
+                    vec![Input::Key {
+                        scan: 0x2e,
+                        down: true
+                    }]
+                );
+                assert!(mapper.pointer_modifiers().is_empty());
+                assert_eq!(
+                    mapper.map(0x2e, false, &settings, direction, false),
+                    vec![Input::Key {
+                        scan: 0x2e,
+                        down: false
+                    }]
+                );
+                assert_eq!(
+                    mapper.map(source, false, &settings, direction, false),
+                    vec![Input::Key {
+                        scan: target,
+                        down: false
+                    }]
+                );
+                assert!(mapper.emitted_modifiers.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn mapping_is_configurable_and_rejects_ambiguous_assignments() {
+        let mut settings = Settings {
+            modifier_mapping: ModifierMapping {
+                command: 8,
+                option: 4,
+                control: 1,
+            },
+            ..Settings::default()
+        };
+        settings.validate().unwrap();
+        let mut mapper = ShortcutMapper::default();
+        assert_eq!(
+            mapper.map(0x15b, true, &settings, Direction::MacToWindows, false),
+            vec![Input::Key {
+                scan: 0x15b,
+                down: true
+            }]
+        );
+        settings.modifier_mapping.command = 1;
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn explicit_shortcuts_override_custom_modifiers_and_restore_held_modifier() {
+        let mut settings = Settings::default();
+        settings.bindings.push(crate::model::ShortcutBinding {
+            direction: Direction::MacToWindows,
+            source_key: 0x2e,
+            source_modifiers: 8,
+            target_key: 0x2f,
+            target_modifiers: 4,
+        });
+        let mut mapper = ShortcutMapper::default();
+        mapper.map(0x15b, true, &settings, Direction::MacToWindows, false);
+        assert_eq!(
+            mapper.map(0x2e, true, &settings, Direction::MacToWindows, false),
+            vec![
+                Input::Key {
+                    scan: 0x1d,
+                    down: false
+                },
+                Input::Key {
+                    scan: 0x38,
+                    down: true
+                },
+                Input::Key {
+                    scan: 0x2f,
+                    down: true
+                }
+            ]
+        );
+        assert_eq!(
+            mapper.map(0x2e, false, &settings, Direction::MacToWindows, false),
+            vec![
+                Input::Key {
+                    scan: 0x2f,
+                    down: false
+                },
+                Input::Key {
+                    scan: 0x38,
+                    down: false
+                },
+                Input::Key {
+                    scan: 0x1d,
+                    down: true
+                }
+            ]
+        );
+        mapper.map(0x15b, false, &settings, Direction::MacToWindows, false);
+        assert!(mapper.emitted_modifiers.is_empty());
     }
 }

@@ -146,3 +146,11 @@ Additional manual checks for this pass:
 - TypeScript, ESLint, Clippy, formatting, and the macOS app/DMG build passed; bundle signature and DMG integrity verified.
 - The packaged 1.0.1 app opened successfully. UI automation could not complete the Connect smoke test because the computer-use session became unavailable.
 - Accessibility/Input Monitoring were not granted to this build. Real Mac/Windows pairing and input sharing remain unverified; Windows needs the shared fixes too.
+
+## 1.1.0 input and status changes
+
+- 71 Rust tests and 33 frontend/release-tool tests pass on macOS, along with TypeScript, ESLint, Clippy with warnings denied, and formatting checks.
+- Added regression coverage for bidirectional left/right modifier mapping, key release and pointer modifiers, explicit shortcut overrides, settings migration and backup round trips, invalid/duplicate modifier assignments, heartbeat pause reconciliation, peer-pause UI, and invalid/replayed motion rejection.
+- Incoming consecutive motion is combined in batches of up to 64 messages, without crossing other event types or control tokens. This reduces native injection calls when a backlog exists; it is not a measured end-to-end latency claim.
+- Both peers require 1.1.0/protocol 3. Existing saved presets remain unchanged; select Custom modifier keys to use Command ↔ Ctrl, Option ↔ Win, Control ↔ Alt.
+- Windows native execution and physical Mac/Windows latency, handoff, and shortcut acceptance testing remain outstanding. No public release was published.

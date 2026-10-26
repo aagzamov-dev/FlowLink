@@ -1,6 +1,6 @@
 export type Ownership =
   "local" | "requesting" | "remote" | "returning" | "paused" | "disconnected";
-export type Preset = "windowsFamiliar" | "macNative";
+export type Preset = "windowsFamiliar" | "macNative" | "customModifiers";
 export interface Shortcut {
   scanCode: number;
   command: boolean;
@@ -18,6 +18,11 @@ export interface Settings {
   deviceName: string;
   paused: boolean;
   preset: Preset;
+  modifierMapping: {
+    command: 1 | 4 | 8;
+    option: 1 | 4 | 8;
+    control: 1 | 4 | 8;
+  };
   allowLocalInput: boolean;
   pointerSpeed: number;
   reverseScroll: boolean;
@@ -112,7 +117,8 @@ export const preview: Snapshot = {
     schema: 1,
     deviceName: "This computer",
     paused: false,
-    preset: "windowsFamiliar",
+    preset: "customModifiers",
+    modifierMapping: { command: 1, option: 8, control: 4 },
     allowLocalInput: true,
     pointerSpeed: 1,
     reverseScroll: false,

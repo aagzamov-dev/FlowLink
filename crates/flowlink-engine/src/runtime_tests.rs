@@ -524,3 +524,52 @@ async fn listener_keeps_preferred_port_when_available() {
     assert!(client.is_ok());
     assert!(accepted.unwrap().is_ok());
 }
+
+#[test]
+fn heartbeat_reconciles_peer_pause_without_resuming_local_pause() {
+    let (engine, _rx) = fixture(true);
+    process(
+        &engine,
+        Message::Heartbeat {
+            nonce: 1,
+            paused: true,
+        },
+    );
+    assert!(engine.snapshot().peer_paused);
+    assert_eq!(engine.snapshot().ownership, Ownership::Paused);
+    engine.pause(true).unwrap();
+    process(
+        &engine,
+        Message::Heartbeat {
+            nonce: 2,
+            paused: false,
+        },
+    );
+    assert!(!engine.snapshot().peer_paused);
+    assert_eq!(engine.snapshot().ownership, Ownership::Paused);
+    engine.pause(false).unwrap();
+    assert_eq!(engine.snapshot().ownership, Ownership::Local);
+}
+
+#[test]
+fn motion_coalescing_rejects_invalid_or_replayed_events() {
+    let token = ControlToken::default();
+    let make = |sequence, dx| Message::Input {
+        token,
+        sequence,
+        event: Input::Motion { dx, dy: 0.0 },
+    };
+    let mut current = make(10, 2.0);
+    assert!(!coalesce_message(&mut current, &make(9, 1.0), token));
+    assert!(!coalesce_message(&mut current, &make(10, 1.0), token));
+    assert!(!coalesce_message(&mut current, &make(11, f64::NAN), token));
+    assert!(coalesce_message(&mut current, &make(11, 3.0), token));
+    assert!(matches!(
+        current,
+        Message::Input {
+            sequence: 11,
+            event: Input::Motion { dx: 5.0, dy: 0.0 },
+            ..
+        }
+    ));
+}

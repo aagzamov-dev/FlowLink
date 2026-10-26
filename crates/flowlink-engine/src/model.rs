@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const PORT: u16 = 47831;
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +19,40 @@ pub enum Ownership {
 pub enum Preset {
     WindowsFamiliar,
     MacNative,
+    CustomModifiers,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModifierMapping {
+    pub command: u8,
+    pub option: u8,
+    pub control: u8,
+}
+impl Default for ModifierMapping {
+    fn default() -> Self {
+        Self {
+            command: 1,
+            option: 8,
+            control: 4,
+        }
+    }
+}
+impl ModifierMapping {
+    pub fn translate(&self, mask: u8, direction: Direction) -> u8 {
+        let mut result = mask & 2;
+        for (mac, windows) in [(8, self.command), (4, self.option), (1, self.control)] {
+            let (source, target) = if direction == Direction::MacToWindows {
+                (mac, windows)
+            } else {
+                (windows, mac)
+            };
+            if mask & source != 0 {
+                result |= target;
+            }
+        }
+        result
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -52,6 +86,8 @@ pub struct Settings {
     pub device_name: String,
     pub paused: bool,
     pub preset: Preset,
+    #[serde(default)]
+    pub modifier_mapping: ModifierMapping,
     pub allow_local_input: bool,
     pub pointer_speed: f64,
     pub reverse_scroll: bool,
@@ -76,7 +112,8 @@ impl Default for Settings {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| "My computer".into()),
             paused: false,
-            preset: Preset::WindowsFamiliar,
+            preset: Preset::CustomModifiers,
+            modifier_mapping: ModifierMapping::default(),
             allow_local_input: true,
             pointer_speed: 1.0,
             reverse_scroll: false,
@@ -104,6 +141,15 @@ fn default_auto_check_updates() -> bool {
 }
 impl Settings {
     pub fn validate(&self) -> std::result::Result<(), String> {
+        let mut modifiers = [
+            self.modifier_mapping.command,
+            self.modifier_mapping.option,
+            self.modifier_mapping.control,
+        ];
+        modifiers.sort_unstable();
+        if modifiers != [1, 4, 8] {
+            return Err("Assign Ctrl, Alt and Win to different Mac modifiers".into());
+        }
         if self.schema != 1 {
             return Err("Unsupported settings version".into());
         }
@@ -285,6 +331,8 @@ pub struct Snapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputSettings {
     pub preset: Preset,
+    #[serde(default)]
+    pub modifier_mapping: ModifierMapping,
     pub pointer_speed: f64,
     pub reverse_scroll: bool,
     pub terminal_apps: Vec<String>,
@@ -297,6 +345,7 @@ impl InputSettings {
     pub fn from_settings(s: &Settings) -> Self {
         Self {
             preset: s.preset.clone(),
+            modifier_mapping: s.modifier_mapping.clone(),
             pointer_speed: s.pointer_speed,
             reverse_scroll: s.reverse_scroll,
             terminal_apps: s.terminal_apps.clone(),
@@ -309,6 +358,7 @@ impl InputSettings {
     pub fn apply(self, s: &mut Settings) -> std::result::Result<(), String> {
         let mut next = s.clone();
         next.preset = self.preset;
+        next.modifier_mapping = self.modifier_mapping;
         next.pointer_speed = self.pointer_speed;
         next.reverse_scroll = self.reverse_scroll;
         next.terminal_apps = self.terminal_apps;
@@ -414,5 +464,41 @@ mod backup_tests {
         assert!(PreferencesBackup::import(&" ".repeat(65537), &local).is_err());
         assert!(PreferencesBackup::import("{}", &local).is_err());
         assert_eq!(local.pointer_speed, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod modifier_settings_tests {
+    use super::*;
+
+    #[test]
+    fn existing_settings_keep_their_mode_and_gain_mapping_defaults() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value["preset"] = serde_json::json!("windowsFamiliar");
+        value.as_object_mut().unwrap().remove("modifierMapping");
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        settings.validate().unwrap();
+        assert_eq!(settings.preset, Preset::WindowsFamiliar);
+        assert_eq!(settings.modifier_mapping, ModifierMapping::default());
+    }
+
+    #[test]
+    fn configuration_and_backup_preserve_custom_modifier_mapping() {
+        let settings = Settings {
+            modifier_mapping: ModifierMapping {
+                command: 4,
+                option: 1,
+                control: 8,
+            },
+            ..Settings::default()
+        };
+        let mut remote = Settings::default();
+        InputSettings::from_settings(&settings)
+            .apply(&mut remote)
+            .unwrap();
+        assert_eq!(remote.modifier_mapping, settings.modifier_mapping);
+        let data = serde_json::to_string(&PreferencesBackup::from_settings(&settings)).unwrap();
+        let imported = PreferencesBackup::import(&data, &Settings::default()).unwrap();
+        assert_eq!(imported.modifier_mapping, settings.modifier_mapping);
     }
 }

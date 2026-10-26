@@ -1,6 +1,6 @@
-# Protocol version 2
+# Protocol version 3
 
-TCP port 47831. Frames: four-byte unsigned big-endian byte length followed by UTF-8 JSON. Accepted lengths: 1–65,536 bytes. No compression or clipboard/file payloads. Set TCP_NODELAY. Maintain one reader and one writer; a partial read is never cancelled and then resumed as a new frame. TLS 1.3 ALPN: `flowlink/2`.
+TCP port 47831. Frames: four-byte unsigned big-endian byte length followed by UTF-8 JSON. Accepted lengths: 1–65,536 bytes. No compression or clipboard/file payloads. Set TCP_NODELAY. Maintain one reader and one writer; a partial read is never cancelled and then resumed as a new frame. TLS 1.3 ALPN: `flowlink/3`.
 
 ## Establishment
 
@@ -30,4 +30,6 @@ Reader/writer queues are bounded. No key/button transition is intentionally coal
 
 This protocol is currently specific to FlowLink and is not Deskflow-compatible.
 
-Both peers must use protocol 2. Version 1 sessions are rejected with upgrade guidance. Existing local settings/trust can be read with defaults for the new control-policy and custom-shortcut fields.
+Both peers must use protocol 3. Older sessions are rejected with upgrade guidance. Existing local settings/trust can be read with defaults for the new control-policy and custom-shortcut fields.
+
+Protocol 3 carries pause state in each heartbeat and configurable modifier assignments in input settings. Both devices must be updated. Consecutive valid motion messages may be combined, retaining their total displacement and final sequence; combination never crosses another event or control token.
